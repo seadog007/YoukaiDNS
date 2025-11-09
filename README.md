@@ -2,6 +2,11 @@
 
 An authoritative DNS server written in Go with a web dashboard for viewing statistics and file transfer monitoring. Supports dynamic file transfer via DNS queries.
 
+<img width="1038" height="659" src="https://github.com/user-attachments/assets/24668bd2-f1eb-41f4-b6ff-f43e44cbfcf1" />
+
+<img width="986" height="761" src="https://github.com/user-attachments/assets/e6e6ee42-86db-456e-8e29-a5d3b7721065" />
+
+
 ## Features
 
 - **Authoritative DNS Server**: Responds to DNS queries for dynamic file transfer
