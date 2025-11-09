@@ -157,8 +157,10 @@ while true; do
     fi
     
     # Parse missing chunk numbers from TXT records
-    # TXT records are returned as quoted strings like "2" "5" "7"
-    MISSING_CHUNKS=$(echo "$MISSING_RESPONSE" | grep -oE '"[0-9]+"' | tr -d '"' | sort -n)
+    # dig +short returns TXT records as quoted strings, one per line or space-separated
+    # Format can be: "123" or "123" "456" or multiple lines with "123"
+    # Extract all quoted numbers, handling both single-line and multi-line responses
+    MISSING_CHUNKS=$(echo "$MISSING_RESPONSE" | grep -oE '"[0-9]+"' | tr -d '"' | grep -E '^[0-9]+$' | sort -n | uniq)
     
     if [ -z "$MISSING_CHUNKS" ]; then
         echo "All chunks received successfully!"

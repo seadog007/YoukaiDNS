@@ -319,7 +319,7 @@ func (s *Server) getTypeName(recordType uint16) string {
 
 // handleMissingQuery handles queries for missing chunks
 // Format: [counter.]missing.<hash8>.<domain> or missing.<hash8>.<domain>
-// Returns up to 8 TXT records with missing chunk numbers, or nil if not a missing query
+// Returns TXT records with all missing chunk numbers, or nil if not a missing query
 func (s *Server) handleMissingQuery(queryDomain string, queryType uint16) []dns.ResourceRecord {
 	// Only handle TXT queries
 	if queryType != dns.TypeTXT {
@@ -422,12 +422,6 @@ func (s *Server) handleMissingQuery(queryDomain string, queryType uint16) []dns.
 	if isCompleted && len(missingChunks) == 0 {
 		// File is complete, return empty response (not NXDOMAIN)
 		return []dns.ResourceRecord{}
-	}
-
-	// Return up to 8 TXT records
-	maxRecords := 8
-	if len(missingChunks) > maxRecords {
-		missingChunks = missingChunks[:maxRecords]
 	}
 
 	if len(missingChunks) == 0 {

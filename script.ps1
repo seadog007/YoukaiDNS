@@ -231,12 +231,30 @@ while ($true) {
                 foreach ($str in $record.Strings) {
                     $chunkNum = 0
                     if ([int]::TryParse($str, [ref]$chunkNum)) {
-                        $MissingChunks += $chunkNum
+                        if ($chunkNum -gt 0) {
+                            $MissingChunks += $chunkNum
+                        }
+                    }
+                }
+            }
+            # Also check if the record has a single string value directly
+            if ($record.Type -eq 16 -and $record.Strings.Count -eq 0) {
+                # Some PowerShell versions return TXT differently
+                $txtValue = $record | Select-Object -ExpandProperty Strings -ErrorAction SilentlyContinue
+                if ($txtValue) {
+                    $chunkNum = 0
+                    if ([int]::TryParse($txtValue, [ref]$chunkNum)) {
+                        if ($chunkNum -gt 0) {
+                            $MissingChunks += $chunkNum
+                        }
                     }
                 }
             }
         }
     }
+    
+    # Remove duplicates and ensure we have valid chunk numbers
+    $MissingChunks = $MissingChunks | Where-Object { $_ -gt 0 } | Sort-Object -Unique
     
     if ($MissingChunks.Count -eq 0) {
         Write-Host "All chunks received successfully!"
