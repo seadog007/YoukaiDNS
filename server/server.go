@@ -53,8 +53,8 @@ type Server struct {
 }
 
 // NewServer creates a new DNS server
-func NewServer(port int, s *stats.Stats, verbose bool, domain string) *Server {
-	outputDir := "received_files"
+func NewServer(port int, s *stats.Stats, verbose bool, domain string, outputDir string) *Server {
+	// Create output directory if it doesn't exist
 	os.MkdirAll(outputDir, 0755)
 
 	return &Server{
