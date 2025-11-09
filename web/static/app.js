@@ -20,13 +20,16 @@ function parseDuration(durationStr) {
         return 0;
     }
     
-    // Remove 'ms', 's', 'ns', 'μs' and convert
+    // Remove 'ms', 's', 'ns', 'µs' (micro sign) or 'μs' (Greek mu) and convert
+    // Go uses 'µs' (U+00B5 micro sign), but we handle both for compatibility
     if (durationStr.endsWith('ms')) {
         return parseFloat(durationStr.replace('ms', ''));
-    } else if (durationStr.endsWith('s')) {
+    } else if (durationStr.endsWith('s') && !durationStr.endsWith('µs') && !durationStr.endsWith('μs') && !durationStr.endsWith('ns')) {
         return parseFloat(durationStr.replace('s', '')) * 1000;
-    } else if (durationStr.endsWith('μs')) {
-        return parseFloat(durationStr.replace('μs', '')) / 1000;
+    } else if (durationStr.endsWith('µs') || durationStr.endsWith('μs')) {
+        // Handle both micro sign (U+00B5) and Greek mu (U+03BC)
+        const value = parseFloat(durationStr.replace(/[µμ]s$/, ''));
+        return value / 1000; // Convert microseconds to milliseconds
     } else if (durationStr.endsWith('ns')) {
         return parseFloat(durationStr.replace('ns', '')) / 1000000;
     }
@@ -62,28 +65,6 @@ function updateDashboard(data) {
                 <span class="type-count">${count.toLocaleString()}</span>
             `;
             typeContainer.appendChild(item);
-        });
-    }
-    
-    // Update top domains
-    const domainContainer = document.getElementById('top-domains');
-    domainContainer.innerHTML = '';
-    
-    if (Object.keys(data.queries_by_domain).length === 0) {
-        domainContainer.innerHTML = '<p style="color: #999; text-align: center; padding: 20px;">No domains queried yet</p>';
-    } else {
-        const sortedDomains = Object.entries(data.queries_by_domain)
-            .sort((a, b) => b[1] - a[1])
-            .slice(0, 10); // Top 10
-        
-        sortedDomains.forEach(([domain, count]) => {
-            const item = document.createElement('div');
-            item.className = 'domain-item';
-            item.innerHTML = `
-                <span class="domain-label">${domain}</span>
-                <span class="domain-count">${count.toLocaleString()}</span>
-            `;
-            domainContainer.appendChild(item);
         });
     }
     
