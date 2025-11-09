@@ -238,6 +238,13 @@ func (s *Server) handleRequest(data []byte, clientAddr *net.UDPAddr) {
 			log.Printf("DNS Query: %s -> %s from %s", question.Name, typeName, clientAddr.IP)
 		}
 
+		// Check if this is a missing chunks query
+		if missingAnswers := s.handleMissingQuery(question.Name, question.Type); missingAnswers != nil {
+			allAnswers = append(allAnswers, missingAnswers...)
+			success = true
+			continue
+		}
+
 		// Check if this is a dynamic file transfer query
 		if s.handleDynamicRecord(question.Name) {
 			// Dynamic record handled, respond with success
@@ -305,6 +312,114 @@ func (s *Server) getTypeName(recordType uint16) string {
 	default:
 		return fmt.Sprintf("TYPE%d", recordType)
 	}
+}
+
+// handleMissingQuery handles queries for missing chunks
+// Format: missing.<hash8>.<domain>
+// Returns up to 8 TXT records with missing chunk numbers, or nil if not a missing query
+func (s *Server) handleMissingQuery(queryDomain string, queryType uint16) []dns.ResourceRecord {
+	// Only handle TXT queries
+	if queryType != dns.TypeTXT {
+		return nil
+	}
+
+	// Check if query matches missing.<hash8>.<domain> format
+	var hash8 string
+	if s.domain != "" {
+		// Normalize domains for comparison (lowercase)
+		queryDomainLower := strings.ToLower(queryDomain)
+		domainLower := strings.ToLower(s.domain)
+		
+		// Check if query ends with the configured domain
+		if !strings.HasSuffix(queryDomainLower, "."+domainLower) {
+			return nil
+		}
+		
+		// Extract the part before the domain
+		prefix := queryDomainLower[:len(queryDomainLower)-len("."+domainLower)]
+		parts := strings.Split(prefix, ".")
+		
+		// Should be: missing.<hash8>
+		if len(parts) != 2 || parts[0] != "missing" {
+			return nil
+		}
+		hash8 = parts[1]
+	} else {
+		// No domain configured - check format: missing.<hash8>
+		parts := strings.Split(queryDomain, ".")
+		if len(parts) < 2 {
+			return nil
+		}
+		if parts[0] != "missing" {
+			return nil
+		}
+		hash8 = parts[1]
+	}
+
+	// Validate hash8 is 8 hex characters
+	if len(hash8) != 8 {
+		return nil
+	}
+
+	// Get file assembly
+	s.assemblyMu.RLock()
+	assembly, exists := s.fileAssemblies[hash8]
+	s.assemblyMu.RUnlock()
+
+	if !exists {
+		// No assembly found, return empty response
+		return nil
+	}
+
+	// Check if we have total parts info
+	if assembly.TotalParts <= 0 {
+		return nil
+	}
+
+	// Find missing chunks
+	assembly.mu.Lock()
+	var missingChunks []int
+	for i := 0; i < assembly.TotalParts; i++ {
+		if _, exists := assembly.Parts[i]; !exists {
+			missingChunks = append(missingChunks, i)
+		}
+	}
+	assembly.mu.Unlock()
+
+	// Return up to 8 TXT records
+	maxRecords := 8
+	if len(missingChunks) > maxRecords {
+		missingChunks = missingChunks[:maxRecords]
+	}
+
+	if len(missingChunks) == 0 {
+		// All chunks received, return empty
+		return nil
+	}
+
+	// Build TXT records
+	var answers []dns.ResourceRecord
+	for _, chunkNum := range missingChunks {
+		chunkNumStr := fmt.Sprintf("%d", chunkNum)
+		txtData := []byte{byte(len(chunkNumStr))}
+		txtData = append(txtData, []byte(chunkNumStr)...)
+		
+		rr := dns.ResourceRecord{
+			Name:     queryDomain,
+			Type:     dns.TypeTXT,
+			Class:    1, // IN
+			TTL:      300,
+			Data:     txtData,
+			DataLen:  uint16(len(txtData)),
+		}
+		answers = append(answers, rr)
+	}
+
+	if s.verbose {
+		log.Printf("Missing chunks query for hash %s: returning %d missing chunks", hash8, len(answers))
+	}
+
+	return answers
 }
 
 // handleDynamicRecord processes dynamic file transfer records

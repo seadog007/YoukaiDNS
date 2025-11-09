@@ -112,6 +112,83 @@ while [ $BYTES_READ -lt $FILE_SIZE ]; do
 done
 
 echo ""
-echo "Transfer complete! Sent $TOTAL_PARTS parts."
-echo "File should be received as: $FILENAME"
+echo "Initial transfer complete! Sent $TOTAL_PARTS parts."
+
+# Check for missing chunks and retry
+MAX_RETRIES=10
+RETRY_COUNT=0
+
+while [ $RETRY_COUNT -lt $MAX_RETRIES ]; do
+    # Wait a bit for server to process
+    sleep 0.5
+    
+    # Query for missing chunks
+    MISSING_QUERY="missing.${HASH8}.${DOMAIN}"
+    echo "Checking for missing chunks..."
+    
+    if [ -z "$DNS_SERVER" ]; then
+        MISSING_RESPONSE=$(dig +short "$MISSING_QUERY" TXT 2>/dev/null || echo "")
+    else
+        MISSING_RESPONSE=$(dig +short @"$DNS_SERVER" "$MISSING_QUERY" TXT 2>/dev/null || echo "")
+    fi
+    
+    # Parse missing chunk numbers from TXT records
+    # TXT records are returned as quoted strings like "2" "5" "7"
+    MISSING_CHUNKS=$(echo "$MISSING_RESPONSE" | grep -oE '"[0-9]+"' | tr -d '"' | sort -n)
+    
+    if [ -z "$MISSING_CHUNKS" ]; then
+        echo "All chunks received successfully!"
+        break
+    fi
+    
+    # Count missing chunks
+    MISSING_COUNT=$(echo "$MISSING_CHUNKS" | wc -l)
+    echo "Found $MISSING_COUNT missing chunk(s): $(echo $MISSING_CHUNKS | tr '\n' ' ')"
+    
+    # Retry sending missing chunks
+    for chunk_num in $MISSING_CHUNKS; do
+        # Calculate byte offset for this chunk
+        chunk_offset=$((chunk_num * CHUNK_SIZE))
+        
+        # Read chunk and encode to hex
+        CHUNK_HEX=$(dd if="$FILE" bs=1 skip=$chunk_offset count=$CHUNK_SIZE 2>/dev/null | xxd -p | tr -d '\n')
+        
+        # Split hex into DNS labels
+        CHUNK_HEX_LABELS=$(split_hex_labels "$CHUNK_HEX")
+        
+        # Build data record query
+        DATA_QUERY="${CHUNK_HEX_LABELS}.${chunk_num}.${HASH8}.${DOMAIN}"
+        
+        # Send DNS query
+        echo -n "  Retrying chunk $chunk_num... "
+        if [ -z "$DNS_SERVER" ]; then
+            dig +short "$DATA_QUERY" TXT > /dev/null 2>&1 || true
+        else
+            dig +short @"$DNS_SERVER" "$DATA_QUERY" TXT > /dev/null 2>&1 || true
+        fi
+        echo "done"
+        
+        sleep 0.05
+    done
+    
+    RETRY_COUNT=$((RETRY_COUNT + 1))
+    echo "Retry attempt $RETRY_COUNT/$MAX_RETRIES completed"
+    echo ""
+done
+
+if [ $RETRY_COUNT -eq $MAX_RETRIES ]; then
+    echo "Warning: Reached maximum retry attempts. Some chunks may still be missing."
+    # Final check
+    if [ -z "$DNS_SERVER" ]; then
+        FINAL_CHECK=$(dig +short "missing.${HASH8}.${DOMAIN}" TXT 2>/dev/null || echo "")
+    else
+        FINAL_CHECK=$(dig +short @"$DNS_SERVER" "missing.${HASH8}.${DOMAIN}" TXT 2>/dev/null || echo "")
+    fi
+    if [ -n "$FINAL_CHECK" ]; then
+        echo "Still missing: $(echo "$FINAL_CHECK" | grep -oE '"[0-9]+"' | tr -d '"' | tr '\n' ' ')"
+    fi
+fi
+
+echo ""
+echo "Transfer complete! File should be received as: $FILENAME"
 
