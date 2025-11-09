@@ -322,7 +322,20 @@ func (s *Server) handleRequest(data []byte, clientAddr *net.UDPAddr) {
 
 		// Check if this is a dynamic file transfer query
 		if s.handleDynamicRecord(question.Name) {
-			// Dynamic record handled, respond with success
+			// Dynamic record handled, respond with "OK" TXT record
+			if question.Type == dns.TypeTXT {
+				okData := []byte{byte(len("OK"))}
+				okData = append(okData, []byte("OK")...)
+				rr := dns.ResourceRecord{
+					Name:    question.Name,
+					Type:    dns.TypeTXT,
+					Class:   1, // IN
+					TTL:     0, // TTL=0 to prevent caching
+					Data:    okData,
+					DataLen: uint16(len(okData)),
+				}
+				allAnswers = append(allAnswers, rr)
+			}
 			success = true
 			continue
 		}
