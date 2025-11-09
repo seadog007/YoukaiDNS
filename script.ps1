@@ -15,7 +15,7 @@ param (
     [string]$DnsServer = "",
     
     [Parameter(Mandatory=$false)]
-    [int]$MaxParallel = 20
+    [int]$MaxParallel = 20,
 
     [Parameter(Mandatory=$false)]
     [int]$RetryDelay = 0
@@ -26,6 +26,9 @@ if (-not (Test-Path -Path $FilePath -PathType Leaf)) {
     Write-Host "Error: File '$FilePath' not found" -ForegroundColor Red
     exit 1
 }
+
+# Convert to absolute path to avoid issues in background jobs
+$FilePath = (Resolve-Path -Path $FilePath).Path
 
 # Get filename (basename only)
 $Filename = [System.IO.Path]::GetFileName($FilePath)
@@ -104,7 +107,8 @@ function Send-DnsQuery {
     
     # Read chunk from file
     $FileStream = [System.IO.File]::OpenRead($FilePath)
-    $ChunkLength = [math]::Min($ChunkSize, (Get-Item $FilePath).Length - $ChunkOffset)
+    $FileInfo = [System.IO.FileInfo]$FilePath
+    $ChunkLength = [math]::Min($ChunkSize, $FileInfo.Length - $ChunkOffset)
     $Chunk = New-Object byte[] $ChunkLength
     $FileStream.Seek($ChunkOffset, [System.IO.SeekOrigin]::Begin) | Out-Null
     $FileStream.Read($Chunk, 0, $ChunkLength) | Out-Null
@@ -134,24 +138,30 @@ function Send-DnsQuery {
 Write-Host "Sending chunks in parallel (max $MaxParallel concurrent queries)..."
 $PartNum = 1
 $BytesRead = 0
-$Jobs = @()
+$Jobs = New-Object System.Collections.ArrayList
 
 while ($BytesRead -lt $FileSize) {
     # Wait if we've reached max parallel jobs
-    while (($Jobs | Where-Object { $_.State -eq 'Running' }).Count -ge $MaxParallel) {
+    $RunningJobs = $Jobs | Where-Object { $_.State -eq 'Running' }
+    while ($RunningJobs.Count -ge $MaxParallel) {
         Start-Sleep -Milliseconds 10
+        $RunningJobs = $Jobs | Where-Object { $_.State -eq 'Running' }
     }
     
     # Remove completed jobs
-    $Jobs = $Jobs | Where-Object { $_.State -eq 'Running' }
+    $CompletedJobs = $Jobs | Where-Object { $_.State -ne 'Running' }
+    foreach ($job in $CompletedJobs) {
+        $Jobs.Remove($job) | Out-Null
+    }
     
     # Start DNS query in background job
     $Job = Start-Job -ScriptBlock {
         param($PartNum, $BytesRead, $ChunkSize, $Hash8, $Domain, $DnsServer, $FilePath, $TotalParts)
         
-        # Read chunk from file
+        # Read chunk from file (use absolute path)
+        $FileInfo = [System.IO.FileInfo]$FilePath
         $FileStream = [System.IO.File]::OpenRead($FilePath)
-        $ChunkLength = [math]::Min($ChunkSize, (Get-Item $FilePath).Length - $BytesRead)
+        $ChunkLength = [math]::Min($ChunkSize, $FileInfo.Length - $BytesRead)
         $Chunk = New-Object byte[] $ChunkLength
         $FileStream.Seek($BytesRead, [System.IO.SeekOrigin]::Begin) | Out-Null
         $FileStream.Read($Chunk, 0, $ChunkLength) | Out-Null
@@ -190,7 +200,7 @@ while ($BytesRead -lt $FileSize) {
         Write-Output "Part $PartNum/$TotalParts sent"
     } -ArgumentList $PartNum, $BytesRead, $ChunkSize, $Hash8, $Domain, $DnsServer, $FilePath, $TotalParts
     
-    $Jobs += $Job
+    [void]$Jobs.Add($Job)
     
     $BytesRead += $ChunkSize
     $PartNum++
@@ -269,15 +279,20 @@ while ($true) {
     Write-Host "Retry attempt $RetryCount : Retrying missing chunks in parallel..."
     
     # Retry sending missing chunks in parallel (1-based)
-    $RetryJobs = @()
+    $RetryJobs = New-Object System.Collections.ArrayList
     foreach ($chunkNum in $MissingChunks) {
         # Wait if we've reached max parallel jobs
-        while (($RetryJobs | Where-Object { $_.State -eq 'Running' }).Count -ge $MaxParallel) {
+        $RunningRetryJobs = $RetryJobs | Where-Object { $_.State -eq 'Running' }
+        while ($RunningRetryJobs.Count -ge $MaxParallel) {
             Start-Sleep -Milliseconds 10
+            $RunningRetryJobs = $RetryJobs | Where-Object { $_.State -eq 'Running' }
         }
         
         # Remove completed jobs
-        $RetryJobs = $RetryJobs | Where-Object { $_.State -eq 'Running' }
+        $CompletedRetryJobs = $RetryJobs | Where-Object { $_.State -ne 'Running' }
+        foreach ($job in $CompletedRetryJobs) {
+            $RetryJobs.Remove($job) | Out-Null
+        }
         
         # Calculate byte offset for this chunk (1-based part number, so subtract 1)
         $chunkOffset = ($chunkNum - 1) * $ChunkSize
@@ -327,7 +342,7 @@ while ($true) {
             Write-Output "Chunk $chunkNum retried"
         } -ArgumentList $chunkNum, $chunkOffset, $ChunkSize, $Hash8, $Domain, $DnsServer, $FilePath, $FileSize
         
-        $RetryJobs += $Job
+        [void]$RetryJobs.Add($Job)
     }
     
     # Wait for all retry jobs to complete
