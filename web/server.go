@@ -1,12 +1,17 @@
 package web
 
 import (
+	"embed"
 	"fmt"
+	"io/fs"
 	"log"
 	"net/http"
 	"youkaidns/server"
 	"youkaidns/stats"
 )
+
+//go:embed static/*
+var staticFiles embed.FS
 
 // Server represents the web dashboard server
 type Server struct {
@@ -28,8 +33,13 @@ func NewServer(port int, s *stats.Stats, listenIP string, dnsServer *server.Serv
 	mux.HandleFunc("/api/files", api.HandleFiles)
 	mux.HandleFunc("/api/download", api.HandleDownload)
 
-	// Static files
-	fs := http.FileServer(http.Dir("web/static"))
+	// Static files (embedded)
+	staticFS, err := fs.Sub(staticFiles, "static")
+	if err != nil {
+		log.Printf("Error creating static filesystem: %v", err)
+		return nil
+	}
+	fs := http.FileServer(http.FS(staticFS))
 	mux.Handle("/static/", http.StripPrefix("/static/", fs))
 	mux.HandleFunc("/", serveDashboard)
 
@@ -56,6 +66,15 @@ func serveDashboard(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	http.ServeFile(w, r, "web/static/index.html")
+	// Read embedded index.html
+	data, err := staticFiles.ReadFile("static/index.html")
+	if err != nil {
+		http.Error(w, "Error reading index.html", http.StatusInternalServerError)
+		log.Printf("Error reading embedded index.html: %v", err)
+		return
+	}
+
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Write(data)
 }
 
