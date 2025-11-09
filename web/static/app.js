@@ -127,7 +127,6 @@ function updateTransfers(transfers) {
         const totalParts = transfer.total_parts || 0;
         const missingChunks = transfer.missing_chunks || [];
         const chunkSize = transfer.chunk_size || 0;
-        const hash = transfer.hash || '';
 
         // Calculate transfer speed
         let speedText = 'N/A';
