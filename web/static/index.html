@@ -1,0 +1,80 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>YoukaiDNS - Dashboard</title>
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>YoukaiDNS Dashboard</h1>
+            <p class="subtitle">Authoritative DNS Server Statistics</p>
+        </header>
+
+        <div class="stats-grid">
+            <div class="stat-card">
+                <h2>Total Queries</h2>
+                <div class="stat-value" id="total-queries">0</div>
+            </div>
+
+            <div class="stat-card">
+                <h2>Successful Responses</h2>
+                <div class="stat-value" id="successful-resps">0</div>
+            </div>
+
+            <div class="stat-card">
+                <h2>Failed Responses</h2>
+                <div class="stat-value" id="failed-resps">0</div>
+            </div>
+
+            <div class="stat-card">
+                <h2>Average Response Time</h2>
+                <div class="stat-value" id="avg-response-time">0ms</div>
+            </div>
+        </div>
+
+        <div class="charts-grid">
+            <div class="chart-card">
+                <h2>Queries by Type</h2>
+                <div id="queries-by-type" class="chart-content"></div>
+            </div>
+
+            <div class="chart-card">
+                <h2>Top Queried Domains</h2>
+                <div id="top-domains" class="chart-content"></div>
+            </div>
+        </div>
+
+        <div class="response-time-card">
+            <h2>Response Time Statistics</h2>
+            <div class="response-time-stats">
+                <div class="time-stat">
+                    <span class="time-label">Min:</span>
+                    <span class="time-value" id="min-time">0ms</span>
+                </div>
+                <div class="time-stat">
+                    <span class="time-label">Max:</span>
+                    <span class="time-value" id="max-time">0ms</span>
+                </div>
+                <div class="time-stat">
+                    <span class="time-label">Average:</span>
+                    <span class="time-value" id="avg-time">0ms</span>
+                </div>
+                <div class="time-stat">
+                    <span class="time-label">Samples:</span>
+                    <span class="time-value" id="time-count">0</span>
+                </div>
+            </div>
+        </div>
+
+        <footer>
+            <p>Last updated: <span id="last-update">Never</span></p>
+        </footer>
+    </div>
+
+    <script src="/static/app.js"></script>
+</body>
+</html>
+
