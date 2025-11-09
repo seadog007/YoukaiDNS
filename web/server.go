@@ -25,6 +25,8 @@ func NewServer(port int, s *stats.Stats, listenIP string, dnsServer *server.Serv
 	// API endpoints
 	mux.HandleFunc("/api/stats", api.HandleStats)
 	mux.HandleFunc("/api/transfers", api.HandleTransfers)
+	mux.HandleFunc("/api/files", api.HandleFiles)
+	mux.HandleFunc("/api/download", api.HandleDownload)
 
 	// Static files
 	fs := http.FileServer(http.Dir("web/static"))

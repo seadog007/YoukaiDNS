@@ -182,13 +182,83 @@ async function fetchTransfers() {
     }
 }
 
+// Format file size
+function formatFileSize(bytes) {
+    if (bytes < 1024) {
+        return bytes + ' B';
+    } else if (bytes < 1024 * 1024) {
+        return (bytes / 1024).toFixed(2) + ' KB';
+    } else if (bytes < 1024 * 1024 * 1024) {
+        return (bytes / (1024 * 1024)).toFixed(2) + ' MB';
+    } else {
+        return (bytes / (1024 * 1024 * 1024)).toFixed(2) + ' GB';
+    }
+}
+
+// Format date
+function formatDate(dateStr) {
+    const date = new Date(dateStr);
+    return date.toLocaleString();
+}
+
+// Update received files display
+function updateFiles(files) {
+    const container = document.getElementById('received-files');
+    container.innerHTML = '';
+
+    if (!files || files.length === 0) {
+        container.innerHTML = '<p style="color: #999; text-align: center; padding: 20px;">No files received yet</p>';
+        return;
+    }
+
+    files.forEach(file => {
+        const fileDiv = document.createElement('div');
+        fileDiv.className = 'file-item';
+
+        const fileName = escapeHtml(file.name || 'Unknown');
+        const fileSize = file.size || 0;
+        const modTime = file.mod_time || '';
+
+        fileDiv.innerHTML = `
+            <div class="file-info">
+                <div class="file-name">${fileName}</div>
+                <div class="file-meta">
+                    <span class="file-size">${formatFileSize(fileSize)}</span>
+                    <span class="file-date">${formatDate(modTime)}</span>
+                </div>
+            </div>
+            <a href="/api/download?file=${encodeURIComponent(fileName)}" class="download-btn" download="${fileName}">
+                Download
+            </a>
+        `;
+
+        container.appendChild(fileDiv);
+    });
+}
+
+// Fetch received files from API
+async function fetchFiles() {
+    try {
+        const response = await fetch('/api/files');
+        if (!response.ok) {
+            throw new Error('Failed to fetch files');
+        }
+        const data = await response.json();
+        updateFiles(data);
+    } catch (error) {
+        console.error('Error fetching files:', error);
+    }
+}
+
 // Start auto-refresh
 function startAutoRefresh() {
     fetchStats(); // Initial fetch
     fetchTransfers(); // Initial fetch
+    fetchFiles(); // Initial fetch
     updateTimer = setInterval(() => {
         fetchStats();
         fetchTransfers();
+        fetchFiles();
     }, UPDATE_INTERVAL);
 }
 

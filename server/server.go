@@ -23,13 +23,13 @@ type Record struct {
 
 // FileAssembly tracks file parts being assembled
 type FileAssembly struct {
-	Filename     string
-	Hash         string
-	TotalParts   int
-	ChunkSize    int
-	Parts        map[int][]byte // part number -> data
-	CompletedAt  time.Time      // When file was completed
-	mu           sync.Mutex
+	Filename    string
+	Hash        string
+	TotalParts  int
+	ChunkSize   int
+	Parts       map[int][]byte // part number -> data
+	CompletedAt time.Time      // When file was completed
+	mu          sync.Mutex
 }
 
 // Server represents a DNS server
@@ -40,11 +40,11 @@ type Server struct {
 	shutdown chan struct{}
 	verbose  bool
 	domain   string // Domain suffix for dynamic records
-	
+
 	// Zone data (dynamically generated)
 	mu      sync.RWMutex
 	records map[string]map[uint16][]Record // domain -> type -> records
-	
+
 	// File assembly tracking
 	fileAssemblies map[string]*FileAssembly // hash -> assembly
 	assemblyMu     sync.RWMutex
@@ -55,16 +55,16 @@ type Server struct {
 func NewServer(port int, s *stats.Stats, verbose bool, domain string) *Server {
 	outputDir := "received_files"
 	os.MkdirAll(outputDir, 0755)
-	
+
 	return &Server{
-		port:          port,
-		stats:         s,
-		shutdown:      make(chan struct{}),
-		verbose:       verbose,
-		domain:        domain,
-		records:       make(map[string]map[uint16][]Record),
+		port:           port,
+		stats:          s,
+		shutdown:       make(chan struct{}),
+		verbose:        verbose,
+		domain:         domain,
+		records:        make(map[string]map[uint16][]Record),
 		fileAssemblies: make(map[string]*FileAssembly),
-		outputDir:     outputDir,
+		outputDir:      outputDir,
 	}
 }
 
@@ -232,7 +232,7 @@ func (s *Server) handleRequest(data []byte, clientAddr *net.UDPAddr) {
 	for _, question := range query.Questions {
 		// Record the query
 		s.stats.RecordQuery(question.Name, question.Type)
-		
+
 		// Verbose logging
 		if s.verbose {
 			typeName := s.getTypeName(question.Type)
@@ -292,7 +292,7 @@ func (s *Server) handleRequest(data []byte, clientAddr *net.UDPAddr) {
 	// Record statistics
 	duration := time.Since(startTime)
 	s.stats.RecordResponse(success, duration)
-	
+
 	// Verbose logging for response
 	if s.verbose {
 		status := "SUCCESS"
@@ -330,16 +330,16 @@ func (s *Server) handleMissingQuery(queryDomain string, queryType uint16) []dns.
 		// Normalize domains for comparison (lowercase)
 		queryDomainLower := strings.ToLower(queryDomain)
 		domainLower := strings.ToLower(s.domain)
-		
+
 		// Check if query ends with the configured domain
 		if !strings.HasSuffix(queryDomainLower, "."+domainLower) {
 			return nil
 		}
-		
+
 		// Extract the part before the domain
 		prefix := queryDomainLower[:len(queryDomainLower)-len("."+domainLower)]
 		parts := strings.Split(prefix, ".")
-		
+
 		// Should be: missing.<hash8>
 		if len(parts) != 2 || parts[0] != "missing" {
 			return nil
@@ -413,14 +413,14 @@ func (s *Server) handleMissingQuery(queryDomain string, queryType uint16) []dns.
 		chunkNumStr := fmt.Sprintf("%d", chunkNum)
 		txtData := []byte{byte(len(chunkNumStr))}
 		txtData = append(txtData, []byte(chunkNumStr)...)
-		
+
 		rr := dns.ResourceRecord{
-			Name:     queryDomain,
-			Type:     dns.TypeTXT,
-			Class:    1, // IN
-			TTL:      300,
-			Data:     txtData,
-			DataLen:  uint16(len(txtData)),
+			Name:    queryDomain,
+			Type:    dns.TypeTXT,
+			Class:   1, // IN
+			TTL:     300,
+			Data:    txtData,
+			DataLen: uint16(len(txtData)),
 		}
 		answers = append(answers, rr)
 	}
@@ -441,12 +441,12 @@ func (s *Server) handleDynamicRecord(queryDomain string) bool {
 		// Normalize domains for comparison (lowercase)
 		queryDomainLower := strings.ToLower(queryDomain)
 		domainLower := strings.ToLower(s.domain)
-		
+
 		// Check if query ends with the configured domain
 		if !strings.HasSuffix(queryDomainLower, "."+domainLower) && queryDomainLower != domainLower {
 			return false
 		}
-		
+
 		// Extract the part before the domain
 		// Remove the domain suffix (including the dot)
 		prefix := queryDomainLower
@@ -456,13 +456,13 @@ func (s *Server) handleDynamicRecord(queryDomain string) bool {
 			// Query is exactly the domain, not a dynamic record
 			return false
 		}
-		
+
 		// Split the prefix part
 		parts := strings.Split(prefix, ".")
 		if len(parts) < 3 {
 			return false
 		}
-		
+
 		// Check for start record: filename.total_parts.chunk_size.start.hash8
 		if len(parts) >= 5 {
 			// Find "start" marker
@@ -477,16 +477,16 @@ func (s *Server) handleDynamicRecord(queryDomain string) bool {
 				return s.handleStartRecord(parts)
 			}
 		}
-		
+
 		// Check for data record: data_hex.part_num.hash8
 		// Need at least 3 parts: data, part_num, hash8
 		if len(parts) >= 3 {
 			return s.handleDataRecord(parts)
 		}
-		
+
 		return false
 	}
-	
+
 	// If no domain configured, use original behavior (backward compatibility)
 	parts := strings.Split(queryDomain, ".")
 	if len(parts) < 4 {
@@ -520,7 +520,7 @@ func (s *Server) handleStartRecord(parts []string) bool {
 			break
 		}
 	}
-	
+
 	// Need: filename_hex, total_parts, chunk_size, start, hash8
 	// So startIdx must be at position 3 or later (0-indexed)
 	if startIdx == -1 || startIdx < 2 || startIdx >= len(parts)-1 {
@@ -533,7 +533,7 @@ func (s *Server) handleStartRecord(parts []string) bool {
 	totalPartsStr := parts[startIdx-2]
 	filenameHexParts := parts[:startIdx-2]
 	filenameHex := strings.Join(filenameHexParts, "")
-	
+
 	// After start: hash8
 	if startIdx+1 >= len(parts) {
 		return false
@@ -600,7 +600,7 @@ func (s *Server) handleDataRecord(parts []string) bool {
 	// Last 2 parts are: hash8, part_num
 	hash8 := parts[len(parts)-1]
 	partNumStr := parts[len(parts)-2]
-	
+
 	// Everything before that is data_hex (may span multiple labels)
 	dataHexParts := parts[:len(parts)-2]
 	dataHex := strings.Join(dataHexParts, "")
@@ -710,7 +710,7 @@ func (s *Server) assembleAndSaveFile(hash8 string) {
 
 	// Mark as completed but keep assembly for a short time to allow missing chunk queries
 	assembly.CompletedAt = time.Now()
-	
+
 	// Clean up assembly after 30 seconds (allows time for final missing chunk queries)
 	go func() {
 		time.Sleep(30 * time.Second)
@@ -730,15 +730,15 @@ func sanitizeFilename(filename string) string {
 	filename = strings.ReplaceAll(filename, "/", "_")
 	filename = strings.ReplaceAll(filename, "\\", "_")
 	filename = strings.ReplaceAll(filename, "..", "_")
-	
+
 	// Remove null bytes
 	filename = strings.ReplaceAll(filename, "\x00", "")
-	
+
 	// Limit length
 	if len(filename) > 255 {
 		filename = filename[:255]
 	}
-	
+
 	return filename
 }
 
@@ -771,13 +771,13 @@ func (s *Server) GetFileTransfers() []map[string]interface{} {
 		assembly.mu.Unlock()
 
 		transfer := map[string]interface{}{
-			"hash":          hash8,
-			"filename":      assembly.Filename,
-			"total_parts":   assembly.TotalParts,
+			"hash":           hash8,
+			"filename":       assembly.Filename,
+			"total_parts":    assembly.TotalParts,
 			"received_parts": receivedParts,
-			"chunk_size":    assembly.ChunkSize,
-			"progress":      progress,
-			"status":        status,
+			"chunk_size":     assembly.ChunkSize,
+			"progress":       progress,
+			"status":         status,
 			"missing_chunks": missingChunks,
 		}
 		transfers = append(transfers, transfer)
@@ -786,3 +786,44 @@ func (s *Server) GetFileTransfers() []map[string]interface{} {
 	return transfers
 }
 
+// GetReceivedFiles returns a list of files in the output directory
+func (s *Server) GetReceivedFiles() ([]map[string]interface{}, error) {
+	files, err := os.ReadDir(s.outputDir)
+	if err != nil {
+		return nil, err
+	}
+
+	var fileList []map[string]interface{}
+	for _, file := range files {
+		if file.IsDir() {
+			continue
+		}
+
+		info, err := file.Info()
+		if err != nil {
+			continue
+		}
+
+		fileList = append(fileList, map[string]interface{}{
+			"name":     file.Name(),
+			"size":     info.Size(),
+			"mod_time": info.ModTime().Format(time.RFC3339),
+		})
+	}
+
+	// Sort by modification time (newest first)
+	for i := 0; i < len(fileList); i++ {
+		for j := i + 1; j < len(fileList); j++ {
+			if fileList[i]["mod_time"].(string) < fileList[j]["mod_time"].(string) {
+				fileList[i], fileList[j] = fileList[j], fileList[i]
+			}
+		}
+	}
+
+	return fileList, nil
+}
+
+// GetOutputDir returns the output directory path
+func (s *Server) GetOutputDir() string {
+	return s.outputDir
+}
