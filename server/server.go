@@ -27,6 +27,7 @@ type FileAssembly struct {
 	Hash        string
 	TotalParts  int
 	ChunkSize   int
+	TotalBytes  int64          // Total file size in bytes
 	Parts       map[int][]byte // part number -> data
 	CompletedAt time.Time      // When file was completed
 	mu          sync.Mutex
@@ -463,8 +464,8 @@ func (s *Server) handleDynamicRecord(queryDomain string) bool {
 			return false
 		}
 
-		// Check for start record: filename.total_parts.chunk_size.start.hash8
-		if len(parts) >= 5 {
+		// Check for start record: filename.total_parts.chunk_size.total_bytes.start.hash8
+		if len(parts) >= 6 {
 			// Find "start" marker
 			startIdx := -1
 			for i, part := range parts {
@@ -473,7 +474,7 @@ func (s *Server) handleDynamicRecord(queryDomain string) bool {
 					break
 				}
 			}
-			if startIdx != -1 {
+			if startIdx != -1 && startIdx >= 3 {
 				return s.handleStartRecord(parts)
 			}
 		}
@@ -493,9 +494,12 @@ func (s *Server) handleDynamicRecord(queryDomain string) bool {
 		return false
 	}
 
-	// Check for start record: filename.total_parts.start.hash8
-	if len(parts) >= 5 && parts[len(parts)-3] == "start" {
-		return s.handleStartRecord(parts)
+	// Check for start record: filename.total_parts.chunk_size.total_bytes.start.hash8
+	// Find "start" marker to check if it's a start record
+	for i, part := range parts {
+		if part == "start" && i >= 3 && i < len(parts)-1 {
+			return s.handleStartRecord(parts)
+		}
 	}
 
 	// Check for data record: data_hex.part_num.hash8
@@ -510,7 +514,7 @@ func (s *Server) handleDynamicRecord(queryDomain string) bool {
 }
 
 // handleStartRecord processes a start record
-// Format: filename_hex.total_parts.chunk_size.start.hash8
+// Format: filename_hex.total_parts.chunk_size.total_bytes.start.hash8
 func (s *Server) handleStartRecord(parts []string) bool {
 	// Find "start" marker
 	startIdx := -1
@@ -521,17 +525,18 @@ func (s *Server) handleStartRecord(parts []string) bool {
 		}
 	}
 
-	// Need: filename_hex, total_parts, chunk_size, start, hash8
-	// So startIdx must be at position 3 or later (0-indexed)
-	if startIdx == -1 || startIdx < 2 || startIdx >= len(parts)-1 {
+	// Need: filename_hex, total_parts, chunk_size, total_bytes, start, hash8
+	// So startIdx must be at position 4 or later (0-indexed)
+	if startIdx == -1 || startIdx < 3 || startIdx >= len(parts)-1 {
 		return false
 	}
 
 	// Parse components
-	// Before start: filename_hex (may span multiple labels), total_parts, chunk_size
-	chunkSizeStr := parts[startIdx-1]
-	totalPartsStr := parts[startIdx-2]
-	filenameHexParts := parts[:startIdx-2]
+	// Before start: filename_hex (may span multiple labels), total_parts, chunk_size, total_bytes
+	totalBytesStr := parts[startIdx-1]
+	chunkSizeStr := parts[startIdx-2]
+	totalPartsStr := parts[startIdx-3]
+	filenameHexParts := parts[:startIdx-3]
 	filenameHex := strings.Join(filenameHexParts, "")
 
 	// After start: hash8
@@ -557,6 +562,12 @@ func (s *Server) handleStartRecord(parts []string) bool {
 		return false
 	}
 
+	// Parse total bytes
+	totalBytes, err := strconv.ParseInt(totalBytesStr, 10, 64)
+	if err != nil || totalBytes < 0 {
+		return false
+	}
+
 	// Decode filename from hex
 	filenameBytes, err := hex.DecodeString(filenameHex)
 	if err != nil {
@@ -574,15 +585,17 @@ func (s *Server) handleStartRecord(parts []string) bool {
 			Hash:       hash8,
 			TotalParts: totalParts,
 			ChunkSize:  chunkSize,
+			TotalBytes: totalBytes,
 			Parts:      make(map[int][]byte),
 		}
 		s.fileAssemblies[hash8] = assembly
-		log.Printf("Started file assembly: %s (hash: %s, parts: %d, chunk_size: %d)", filename, hash8, totalParts, chunkSize)
+		log.Printf("Started file assembly: %s (hash: %s, parts: %d, chunk_size: %d, total_bytes: %d)", filename, hash8, totalParts, chunkSize, totalBytes)
 	} else {
 		// Update if needed
 		assembly.Filename = filename
 		assembly.TotalParts = totalParts
 		assembly.ChunkSize = chunkSize
+		assembly.TotalBytes = totalBytes
 	}
 	s.assemblyMu.Unlock()
 
@@ -632,6 +645,7 @@ func (s *Server) handleDataRecord(parts []string) bool {
 			Filename:   fmt.Sprintf("unknown_%s", hash8),
 			Hash:       hash8,
 			TotalParts: -1, // Unknown
+			TotalBytes: -1, // Unknown
 			Parts:      make(map[int][]byte),
 		}
 		s.fileAssemblies[hash8] = assembly
@@ -776,6 +790,7 @@ func (s *Server) GetFileTransfers() []map[string]interface{} {
 			"total_parts":    assembly.TotalParts,
 			"received_parts": receivedParts,
 			"chunk_size":     assembly.ChunkSize,
+			"total_bytes":    assembly.TotalBytes,
 			"progress":       progress,
 			"status":         status,
 			"missing_chunks": missingChunks,

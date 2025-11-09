@@ -68,9 +68,9 @@ split_hex_labels() {
 }
 
 # Build start record query
-# Format: filename_hex.total_parts.chunk_size.start.hash8.<domain>
+# Format: filename_hex.total_parts.chunk_size.total_bytes.start.hash8.<domain>
 FILENAME_HEX_LABELS=$(split_hex_labels "$FILENAME_HEX")
-START_QUERY="${FILENAME_HEX_LABELS}.${TOTAL_PARTS}.${CHUNK_SIZE}.start.${HASH8}.${DOMAIN}"
+START_QUERY="${FILENAME_HEX_LABELS}.${TOTAL_PARTS}.${CHUNK_SIZE}.${FILE_SIZE}.start.${HASH8}.${DOMAIN}"
 
 echo "Sending start record..."
 if [ -z "$DNS_SERVER" ]; then

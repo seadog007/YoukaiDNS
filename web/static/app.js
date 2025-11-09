@@ -112,6 +112,10 @@ function updateTransfers(transfers) {
                     <span class="transfer-info-value">${transfer.hash || 'N/A'}</span>
                 </div>
                 <div class="transfer-info-item">
+                    <span class="transfer-info-label">File Size</span>
+                    <span class="transfer-info-value">${transfer.total_bytes > 0 ? formatFileSize(transfer.total_bytes) : 'Unknown'}</span>
+                </div>
+                <div class="transfer-info-item">
                     <span class="transfer-info-label">Progress</span>
                     <span class="transfer-info-value">${receivedParts} / ${totalParts} chunks</span>
                 </div>
