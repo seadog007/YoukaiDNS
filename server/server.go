@@ -722,3 +722,46 @@ func sanitizeFilename(filename string) string {
 	return filename
 }
 
+// GetFileTransfers returns information about all active file transfers
+func (s *Server) GetFileTransfers() []map[string]interface{} {
+	s.assemblyMu.RLock()
+	defer s.assemblyMu.RUnlock()
+
+	var transfers []map[string]interface{}
+	for hash8, assembly := range s.fileAssemblies {
+		assembly.mu.Lock()
+		receivedParts := len(assembly.Parts)
+		var missingChunks []int
+		if assembly.TotalParts > 0 {
+			for i := 0; i < assembly.TotalParts; i++ {
+				if _, exists := assembly.Parts[i]; !exists {
+					missingChunks = append(missingChunks, i)
+				}
+			}
+		}
+		progress := 0.0
+		if assembly.TotalParts > 0 {
+			progress = float64(receivedParts) / float64(assembly.TotalParts) * 100.0
+		}
+		status := "in_progress"
+		if assembly.TotalParts > 0 && receivedParts >= assembly.TotalParts && len(missingChunks) == 0 {
+			status = "complete"
+		}
+		assembly.mu.Unlock()
+
+		transfer := map[string]interface{}{
+			"hash":          hash8,
+			"filename":      assembly.Filename,
+			"total_parts":   assembly.TotalParts,
+			"received_parts": receivedParts,
+			"chunk_size":    assembly.ChunkSize,
+			"progress":      progress,
+			"status":        status,
+			"missing_chunks": missingChunks,
+		}
+		transfers = append(transfers, transfer)
+	}
+
+	return transfers
+}
+

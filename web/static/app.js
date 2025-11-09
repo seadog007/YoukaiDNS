@@ -101,6 +101,72 @@ function updateDashboard(data) {
     document.getElementById('last-update').textContent = new Date().toLocaleTimeString();
 }
 
+// Update file transfers display
+function updateTransfers(transfers) {
+    const container = document.getElementById('file-transfers');
+    container.innerHTML = '';
+
+    if (!transfers || transfers.length === 0) {
+        container.innerHTML = '<p style="color: #999; text-align: center; padding: 20px;">No active file transfers</p>';
+        return;
+    }
+
+    transfers.forEach(transfer => {
+        const transferDiv = document.createElement('div');
+        transferDiv.className = `transfer-item ${transfer.status}`;
+
+        const progress = transfer.progress || 0;
+        const receivedParts = transfer.received_parts || 0;
+        const totalParts = transfer.total_parts || 0;
+        const missingChunks = transfer.missing_chunks || [];
+
+        transferDiv.innerHTML = `
+            <div class="transfer-header">
+                <div class="transfer-filename">${escapeHtml(transfer.filename || 'Unknown')}</div>
+                <div class="transfer-status ${transfer.status}">${transfer.status}</div>
+            </div>
+            <div class="transfer-info">
+                <div class="transfer-info-item">
+                    <span class="transfer-info-label">Hash</span>
+                    <span class="transfer-info-value">${transfer.hash || 'N/A'}</span>
+                </div>
+                <div class="transfer-info-item">
+                    <span class="transfer-info-label">Progress</span>
+                    <span class="transfer-info-value">${receivedParts} / ${totalParts} chunks</span>
+                </div>
+                <div class="transfer-info-item">
+                    <span class="transfer-info-label">Chunk Size</span>
+                    <span class="transfer-info-value">${transfer.chunk_size || 0} bytes</span>
+                </div>
+                <div class="transfer-info-item">
+                    <span class="transfer-info-label">Percentage</span>
+                    <span class="transfer-info-value">${progress.toFixed(1)}%</span>
+                </div>
+            </div>
+            <div class="progress-bar-container">
+                <div class="progress-bar ${transfer.status}" style="width: ${progress}%">
+                    ${progress >= 10 ? progress.toFixed(1) + '%' : ''}
+                </div>
+            </div>
+            ${missingChunks.length > 0 ? `
+                <div class="missing-chunks">
+                    <span class="missing-chunks-label">Missing chunks:</span>
+                    <span class="missing-chunks-list">${missingChunks.slice(0, 20).join(', ')}${missingChunks.length > 20 ? '...' : ''}</span>
+                </div>
+            ` : ''}
+        `;
+
+        container.appendChild(transferDiv);
+    });
+}
+
+// Escape HTML to prevent XSS
+function escapeHtml(text) {
+    const div = document.createElement('div');
+    div.textContent = text;
+    return div.innerHTML;
+}
+
 // Fetch stats from API
 async function fetchStats() {
     try {
@@ -121,10 +187,28 @@ async function fetchStats() {
     }
 }
 
+// Fetch file transfers from API
+async function fetchTransfers() {
+    try {
+        const response = await fetch('/api/transfers');
+        if (!response.ok) {
+            throw new Error('Failed to fetch transfers');
+        }
+        const data = await response.json();
+        updateTransfers(data);
+    } catch (error) {
+        console.error('Error fetching transfers:', error);
+    }
+}
+
 // Start auto-refresh
 function startAutoRefresh() {
     fetchStats(); // Initial fetch
-    updateTimer = setInterval(fetchStats, UPDATE_INTERVAL);
+    fetchTransfers(); // Initial fetch
+    updateTimer = setInterval(() => {
+        fetchStats();
+        fetchTransfers();
+    }, UPDATE_INTERVAL);
 }
 
 // Stop auto-refresh

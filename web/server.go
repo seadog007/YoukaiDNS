@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"youkaidns/server"
 	"youkaidns/stats"
 )
 
@@ -12,16 +13,18 @@ type Server struct {
 	port      int
 	listenIP  string
 	stats     *stats.Stats
+	dnsServer *server.Server
 	mux       *http.ServeMux
 }
 
 // NewServer creates a new web server
-func NewServer(port int, s *stats.Stats, listenIP string) *Server {
-	api := NewAPI(s)
+func NewServer(port int, s *stats.Stats, listenIP string, dnsServer *server.Server) *Server {
+	api := NewAPI(s, dnsServer)
 	mux := http.NewServeMux()
 
-	// API endpoint
+	// API endpoints
 	mux.HandleFunc("/api/stats", api.HandleStats)
+	mux.HandleFunc("/api/transfers", api.HandleTransfers)
 
 	// Static files
 	fs := http.FileServer(http.Dir("web/static"))
@@ -29,10 +32,11 @@ func NewServer(port int, s *stats.Stats, listenIP string) *Server {
 	mux.HandleFunc("/", serveDashboard)
 
 	return &Server{
-		port:     port,
-		listenIP: listenIP,
-		stats:    s,
-		mux:      mux,
+		port:      port,
+		listenIP:  listenIP,
+		stats:     s,
+		dnsServer: dnsServer,
+		mux:       mux,
 	}
 }
 

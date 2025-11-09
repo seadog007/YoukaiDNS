@@ -40,7 +40,7 @@ func main() {
 	dnsServer := server.NewServer(cfg.DNSPort, statsCollector, *verbose, *domain)
 
 	// Initialize web dashboard with listen IP
-	webServer := web.NewServer(cfg.WebPort, statsCollector, *webListenIP)
+	webServer := web.NewServer(cfg.WebPort, statsCollector, *webListenIP, dnsServer)
 
 	// Start DNS server
 	if err := dnsServer.Start(); err != nil {
