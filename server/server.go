@@ -23,12 +23,13 @@ type Record struct {
 
 // FileAssembly tracks file parts being assembled
 type FileAssembly struct {
-	Filename   string
-	Hash       string
-	TotalParts int
-	ChunkSize  int
-	Parts      map[int][]byte // part number -> data
-	mu         sync.Mutex
+	Filename     string
+	Hash         string
+	TotalParts   int
+	ChunkSize    int
+	Parts        map[int][]byte // part number -> data
+	CompletedAt  time.Time      // When file was completed
+	mu           sync.Mutex
 }
 
 // Server represents a DNS server
@@ -376,15 +377,24 @@ func (s *Server) handleMissingQuery(queryDomain string, queryType uint16) []dns.
 		return nil
 	}
 
-	// Find missing chunks
+	// Find missing chunks (1-based: parts 1 to TotalParts)
 	assembly.mu.Lock()
 	var missingChunks []int
-	for i := 0; i < assembly.TotalParts; i++ {
-		if _, exists := assembly.Parts[i]; !exists {
-			missingChunks = append(missingChunks, i)
+	isCompleted := !assembly.CompletedAt.IsZero()
+	if assembly.TotalParts > 0 {
+		for i := 1; i <= assembly.TotalParts; i++ {
+			if _, exists := assembly.Parts[i]; !exists {
+				missingChunks = append(missingChunks, i)
+			}
 		}
 	}
 	assembly.mu.Unlock()
+
+	// If file is completed, return empty response (no missing chunks)
+	if isCompleted && len(missingChunks) == 0 {
+		// File is complete, return empty response (not NXDOMAIN)
+		return []dns.ResourceRecord{}
+	}
 
 	// Return up to 8 TXT records
 	maxRecords := 8
@@ -393,8 +403,8 @@ func (s *Server) handleMissingQuery(queryDomain string, queryType uint16) []dns.
 	}
 
 	if len(missingChunks) == 0 {
-		// All chunks received, return empty
-		return nil
+		// All chunks received but not yet marked complete, return empty
+		return []dns.ResourceRecord{}
 	}
 
 	// Build TXT records
@@ -600,9 +610,9 @@ func (s *Server) handleDataRecord(parts []string) bool {
 		return false
 	}
 
-	// Parse part number
+	// Parse part number (1-based)
 	partNum, err := strconv.Atoi(partNumStr)
-	if err != nil || partNum < 0 {
+	if err != nil || partNum < 1 {
 		return false
 	}
 
@@ -639,10 +649,10 @@ func (s *Server) handleDataRecord(parts []string) bool {
 
 	// Check if file is complete
 	if assembly.TotalParts > 0 && receivedParts >= assembly.TotalParts {
-		// Check if we have all parts
+		// Check if we have all parts (1-based: parts 1 to TotalParts)
 		assembly.mu.Lock()
 		allParts := true
-		for i := 0; i < assembly.TotalParts; i++ {
+		for i := 1; i <= assembly.TotalParts; i++ {
 			if _, exists := assembly.Parts[i]; !exists {
 				allParts = false
 				break
@@ -671,9 +681,9 @@ func (s *Server) assembleAndSaveFile(hash8 string) {
 	assembly.mu.Lock()
 	defer assembly.mu.Unlock()
 
-	// Assemble parts in order
+	// Assemble parts in order (1-based: parts 1 to TotalParts)
 	var fileData []byte
-	for i := 0; i < assembly.TotalParts; i++ {
+	for i := 1; i <= assembly.TotalParts; i++ {
 		part, exists := assembly.Parts[i]
 		if !exists {
 			log.Printf("Warning: Missing part %d for file %s (hash: %s)", i, assembly.Filename, hash8)
@@ -698,10 +708,20 @@ func (s *Server) assembleAndSaveFile(hash8 string) {
 
 	log.Printf("Successfully saved file: %s (size: %d bytes, hash: %s)", filePath, len(fileData), hash8)
 
-	// Clean up assembly
-	s.assemblyMu.Lock()
-	delete(s.fileAssemblies, hash8)
-	s.assemblyMu.Unlock()
+	// Mark as completed but keep assembly for a short time to allow missing chunk queries
+	assembly.CompletedAt = time.Now()
+	
+	// Clean up assembly after 30 seconds (allows time for final missing chunk queries)
+	go func() {
+		time.Sleep(30 * time.Second)
+		s.assemblyMu.Lock()
+		defer s.assemblyMu.Unlock()
+		// Double-check it's still the same assembly and completed
+		if existing, exists := s.fileAssemblies[hash8]; exists && existing == assembly {
+			delete(s.fileAssemblies, hash8)
+			log.Printf("Cleaned up completed file assembly: %s (hash: %s)", assembly.Filename, hash8)
+		}
+	}()
 }
 
 // sanitizeFilename creates a safe filename from the original
@@ -732,8 +752,9 @@ func (s *Server) GetFileTransfers() []map[string]interface{} {
 		assembly.mu.Lock()
 		receivedParts := len(assembly.Parts)
 		var missingChunks []int
+		// Find missing chunks (1-based: parts 1 to TotalParts)
 		if assembly.TotalParts > 0 {
-			for i := 0; i < assembly.TotalParts; i++ {
+			for i := 1; i <= assembly.TotalParts; i++ {
 				if _, exists := assembly.Parts[i]; !exists {
 					missingChunks = append(missingChunks, i)
 				}
