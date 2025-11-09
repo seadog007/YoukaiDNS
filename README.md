@@ -93,6 +93,35 @@ The server handles dynamic file transfer via DNS queries. Files are transferred 
   - Returns up to 8 TXT records with missing chunk numbers
   - Counter prefix avoids DNS caching (e.g., `1.missing.abc12345.example.com`)
 
+#### Serving Scripts via DNS
+
+The server can serve the transfer scripts themselves via DNS, allowing you to retrieve them when you only have DNS access.
+
+**Get the one-liner command:**
+
+**Linux/macOS:**
+```bash
+dig +short linux.script.<domain> TXT
+```
+
+**Windows:**
+```powershell
+Resolve-DnsName -Name windows.script.<domain> -Type TXT
+```
+
+This returns a one-liner command that retrieves and decodes the full script. Execute the returned command to get the script.
+
+**Example:**
+```bash
+# Get the one-liner
+dig +short linux.script.dns2.example.com TXT
+
+# Execute the returned one-liner to get the full script
+# The one-liner will query chunks like: 1.linux.script.dns2.example.com, 2.linux.script.dns2.example.com, etc.
+```
+
+**Note:** The one-liner avoids DNS resolver limits on large responses by querying individual chunks sequentially.
+
 #### Transfer Scripts
 
 **Bash (Linux/macOS):**
