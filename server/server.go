@@ -115,7 +115,7 @@ func (s *Server) convertToResourceRecords(domain string, records []Record) []dns
 			Name:  domain,
 			Type:  record.Type,
 			Class: 1, // IN
-			TTL:   300,
+			TTL:   0, // TTL=0 to prevent caching
 		}
 
 		switch record.Type {
@@ -317,7 +317,7 @@ func (s *Server) getTypeName(recordType uint16) string {
 }
 
 // handleMissingQuery handles queries for missing chunks
-// Format: missing.<hash8>.<domain>
+// Format: [counter.]missing.<hash8>.<domain> or missing.<hash8>.<domain>
 // Returns up to 8 TXT records with missing chunk numbers, or nil if not a missing query
 func (s *Server) handleMissingQuery(queryDomain string, queryType uint16) []dns.ResourceRecord {
 	// Only handle TXT queries
@@ -325,7 +325,7 @@ func (s *Server) handleMissingQuery(queryDomain string, queryType uint16) []dns.
 		return nil
 	}
 
-	// Check if query matches missing.<hash8>.<domain> format
+	// Check if query matches [counter.]missing.<hash8>.<domain> format
 	var hash8 string
 	if s.domain != "" {
 		// Normalize domains for comparison (lowercase)
@@ -341,21 +341,47 @@ func (s *Server) handleMissingQuery(queryDomain string, queryType uint16) []dns.
 		prefix := queryDomainLower[:len(queryDomainLower)-len("."+domainLower)]
 		parts := strings.Split(prefix, ".")
 
-		// Should be: missing.<hash8>
-		if len(parts) != 2 || parts[0] != "missing" {
+		// Should be: [counter.]missing.<hash8> or missing.<hash8>
+		// Find "missing" in the parts
+		missingIdx := -1
+		for i, part := range parts {
+			if part == "missing" {
+				missingIdx = i
+				break
+			}
+		}
+
+		if missingIdx == -1 {
 			return nil
 		}
-		hash8 = parts[1]
+
+		// After "missing" should be hash8
+		if missingIdx+1 >= len(parts) {
+			return nil
+		}
+		hash8 = parts[missingIdx+1]
 	} else {
-		// No domain configured - check format: missing.<hash8>
+		// No domain configured - check format: [counter.]missing.<hash8>
 		parts := strings.Split(queryDomain, ".")
-		if len(parts) < 2 {
+
+		// Find "missing" in the parts
+		missingIdx := -1
+		for i, part := range parts {
+			if part == "missing" {
+				missingIdx = i
+				break
+			}
+		}
+
+		if missingIdx == -1 {
 			return nil
 		}
-		if parts[0] != "missing" {
+
+		// After "missing" should be hash8
+		if missingIdx+1 >= len(parts) {
 			return nil
 		}
-		hash8 = parts[1]
+		hash8 = parts[missingIdx+1]
 	}
 
 	// Validate hash8 is 8 hex characters
@@ -419,7 +445,7 @@ func (s *Server) handleMissingQuery(queryDomain string, queryType uint16) []dns.
 			Name:    queryDomain,
 			Type:    dns.TypeTXT,
 			Class:   1, // IN
-			TTL:     300,
+			TTL:     0, // TTL=0 to prevent caching
 			Data:    txtData,
 			DataLen: uint16(len(txtData)),
 		}

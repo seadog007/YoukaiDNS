@@ -208,8 +208,8 @@ while ($true) {
     # Wait 1 second for server to process
     Start-Sleep -Seconds 1
     
-    # Query for missing chunks
-    $MissingQuery = "missing.$Hash8.$Domain"
+    # Query for missing chunks with counter prefix to avoid DNS caching
+    $MissingQuery = "$RetryCount.missing.$Hash8.$Domain"
     Write-Host "Checking for missing chunks..."
     
     $MissingResponse = $null

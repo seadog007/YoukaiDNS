@@ -146,8 +146,8 @@ while true; do
     # Wait 1 second for server to process
     sleep 1
     
-    # Query for missing chunks
-    MISSING_QUERY="missing.${HASH8}.${DOMAIN}"
+    # Query for missing chunks with counter prefix to avoid DNS caching
+    MISSING_QUERY="${RETRY_COUNT}.missing.${HASH8}.${DOMAIN}"
     echo "Checking for missing chunks..."
     
     if [ -z "$DNS_SERVER" ]; then
