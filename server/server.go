@@ -7,6 +7,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -823,6 +824,16 @@ func (s *Server) GetFileTransfers() []map[string]interface{} {
 		}
 		transfers = append(transfers, transfer)
 	}
+
+	// Sort transfers by hash for consistent ordering
+	sort.Slice(transfers, func(i, j int) bool {
+		hashI, okI := transfers[i]["hash"].(string)
+		hashJ, okJ := transfers[j]["hash"].(string)
+		if !okI || !okJ {
+			return false
+		}
+		return hashI < hashJ
+	})
 
 	return transfers
 }
