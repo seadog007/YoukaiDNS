@@ -16,6 +16,9 @@ param (
     
     [Parameter(Mandatory=$false)]
     [int]$MaxParallel = 20
+
+    [Parameter(Mandatory=$false)]
+    [int]$RetryDelay = 0
 )
 
 # Check if file exists
@@ -50,6 +53,7 @@ Write-Host "Total parts: $TotalParts"
 Write-Host "Hash: $Hash8"
 Write-Host "Domain: $Domain"
 Write-Host "Max parallel: $MaxParallel"
+Write-Host "Retry delay: $RetryDelay seconds"
 Write-Host ""
 
 # Function to split hex string into DNS labels (max 63 chars per label)
@@ -205,8 +209,8 @@ Write-Host "Initial transfer complete! Sent $TotalParts parts."
 $RetryCount = 0
 
 while ($true) {
-    # Wait 1 second for server to process
-    Start-Sleep -Seconds 1
+    # Wait RETRY_DELAY seconds for server to process
+    Start-Sleep -Seconds $RetryDelay
     
     # Query for missing chunks with counter prefix to avoid DNS caching
     $MissingQuery = "$RetryCount.missing.$Hash8.$Domain"

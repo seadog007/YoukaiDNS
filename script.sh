@@ -141,10 +141,10 @@ echo "Initial transfer complete! Sent $TOTAL_PARTS parts."
 
 # Check for missing chunks and retry (retry indefinitely until all chunks are received)
 RETRY_COUNT=0
-
+RETRY_DELAY=${RETRY_DELAY:-0}
 while true; do
-    # Wait 1 second for server to process
-    sleep 1
+    # Wait RETRY_DELAY seconds for server to process
+    sleep $RETRY_DELAY
     
     # Query for missing chunks with counter prefix to avoid DNS caching
     MISSING_QUERY="${RETRY_COUNT}.missing.${HASH8}.${DOMAIN}"
