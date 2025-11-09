@@ -3,6 +3,9 @@ const UPDATE_INTERVAL = 2000;
 
 let updateTimer = null;
 
+// Track previous transfer state for speed calculation
+const previousTransfers = new Map(); // hash -> { receivedParts, timestamp }
+
 // Format duration in milliseconds
 function formatDuration(durationMs) {
     if (durationMs < 1) {
@@ -82,6 +85,17 @@ function updateDashboard(data) {
     document.getElementById('last-update').textContent = new Date().toLocaleTimeString();
 }
 
+// Format transfer speed
+function formatSpeed(bytesPerSecond) {
+    if (bytesPerSecond < 1024) {
+        return bytesPerSecond.toFixed(0) + ' B/s';
+    } else if (bytesPerSecond < 1024 * 1024) {
+        return (bytesPerSecond / 1024).toFixed(2) + ' KB/s';
+    } else {
+        return (bytesPerSecond / (1024 * 1024)).toFixed(2) + ' MB/s';
+    }
+}
+
 // Update file transfers display
 function updateTransfers(transfers) {
     const container = document.getElementById('file-transfers');
@@ -89,10 +103,22 @@ function updateTransfers(transfers) {
 
     if (!transfers || transfers.length === 0) {
         container.innerHTML = '<p style="color: #999; text-align: center; padding: 20px;">No active file transfers</p>';
+        // Clean up previous transfers tracking
+        previousTransfers.clear();
         return;
     }
 
+    const now = Date.now();
+    const updateIntervalSeconds = UPDATE_INTERVAL / 1000;
+
+    // Track active transfer hashes to clean up old entries
+    const activeHashes = new Set();
+
     transfers.forEach(transfer => {
+        const hash = transfer.hash || '';
+        if (hash) {
+            activeHashes.add(hash);
+        }
         const transferDiv = document.createElement('div');
         transferDiv.className = `transfer-item ${transfer.status}`;
 
@@ -100,6 +126,28 @@ function updateTransfers(transfers) {
         const receivedParts = transfer.received_parts || 0;
         const totalParts = transfer.total_parts || 0;
         const missingChunks = transfer.missing_chunks || [];
+        const chunkSize = transfer.chunk_size || 0;
+        const hash = transfer.hash || '';
+
+        // Calculate transfer speed
+        let speedText = 'N/A';
+        if (hash && previousTransfers.has(hash)) {
+            const prev = previousTransfers.get(hash);
+            const chunkDiff = receivedParts - prev.receivedParts;
+            const timeDiff = (now - prev.timestamp) / 1000; // Convert to seconds
+            
+            if (timeDiff > 0 && chunkDiff >= 0) {
+                const bytesDiff = chunkDiff * chunkSize;
+                const bytesPerSecond = bytesDiff / timeDiff;
+                speedText = formatSpeed(bytesPerSecond);
+            }
+        }
+
+        // Update previous state
+        previousTransfers.set(hash, {
+            receivedParts: receivedParts,
+            timestamp: now
+        });
 
         transferDiv.innerHTML = `
             <div class="transfer-header">
@@ -118,6 +166,10 @@ function updateTransfers(transfers) {
                 <div class="transfer-info-item">
                     <span class="transfer-info-label">Progress</span>
                     <span class="transfer-info-value">${receivedParts} / ${totalParts} chunks</span>
+                </div>
+                <div class="transfer-info-item">
+                    <span class="transfer-info-label">Speed</span>
+                    <span class="transfer-info-value">${speedText}</span>
                 </div>
                 <div class="transfer-info-item">
                     <span class="transfer-info-label">Chunk Size</span>
@@ -143,6 +195,13 @@ function updateTransfers(transfers) {
 
         container.appendChild(transferDiv);
     });
+
+    // Clean up previous transfers that are no longer active
+    for (const hash of previousTransfers.keys()) {
+        if (!activeHashes.has(hash)) {
+            previousTransfers.delete(hash);
+        }
+    }
 }
 
 // Escape HTML to prevent XSS
