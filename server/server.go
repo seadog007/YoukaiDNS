@@ -1,9 +1,14 @@
 package server
 
 import (
+	"encoding/hex"
 	"fmt"
 	"log"
 	"net"
+	"os"
+	"path/filepath"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 	"youkaidns/dns"
@@ -16,25 +21,49 @@ type Record struct {
 	Value interface{} // string for A (IPv4), []string for TXT
 }
 
+// FileAssembly tracks file parts being assembled
+type FileAssembly struct {
+	Filename   string
+	Hash       string
+	TotalParts int
+	ChunkSize  int
+	Parts      map[int][]byte // part number -> data
+	mu         sync.Mutex
+}
+
 // Server represents a DNS server
 type Server struct {
 	port     int
 	stats    *stats.Stats
 	conn     *net.UDPConn
 	shutdown chan struct{}
+	verbose  bool
+	domain   string // Domain suffix for dynamic records
 	
 	// Zone data (dynamically generated)
 	mu      sync.RWMutex
 	records map[string]map[uint16][]Record // domain -> type -> records
+	
+	// File assembly tracking
+	fileAssemblies map[string]*FileAssembly // hash -> assembly
+	assemblyMu     sync.RWMutex
+	outputDir      string
 }
 
 // NewServer creates a new DNS server
-func NewServer(port int, s *stats.Stats) *Server {
+func NewServer(port int, s *stats.Stats, verbose bool, domain string) *Server {
+	outputDir := "received_files"
+	os.MkdirAll(outputDir, 0755)
+	
 	return &Server{
-		port:     port,
-		stats:    s,
-		shutdown: make(chan struct{}),
-		records:  make(map[string]map[uint16][]Record),
+		port:          port,
+		stats:         s,
+		shutdown:      make(chan struct{}),
+		verbose:       verbose,
+		domain:        domain,
+		records:       make(map[string]map[uint16][]Record),
+		fileAssemblies: make(map[string]*FileAssembly),
+		outputDir:     outputDir,
 	}
 }
 
@@ -202,6 +231,19 @@ func (s *Server) handleRequest(data []byte, clientAddr *net.UDPAddr) {
 	for _, question := range query.Questions {
 		// Record the query
 		s.stats.RecordQuery(question.Name, question.Type)
+		
+		// Verbose logging
+		if s.verbose {
+			typeName := s.getTypeName(question.Type)
+			log.Printf("DNS Query: %s -> %s from %s", question.Name, typeName, clientAddr.IP)
+		}
+
+		// Check if this is a dynamic file transfer query
+		if s.handleDynamicRecord(question.Name) {
+			// Dynamic record handled, respond with success
+			success = true
+			continue
+		}
 
 		// Lookup in zone
 		records := s.lookup(question.Name, question.Type)
@@ -242,5 +284,326 @@ func (s *Server) handleRequest(data []byte, clientAddr *net.UDPAddr) {
 	// Record statistics
 	duration := time.Since(startTime)
 	s.stats.RecordResponse(success, duration)
+	
+	// Verbose logging for response
+	if s.verbose {
+		status := "SUCCESS"
+		if !success {
+			status = "NXDOMAIN"
+		}
+		log.Printf("DNS Response: %s (%d answers) in %v", status, len(allAnswers), duration)
+	}
+}
+
+// getTypeName returns a string representation of DNS record type
+func (s *Server) getTypeName(recordType uint16) string {
+	switch recordType {
+	case dns.TypeA:
+		return "A"
+	case dns.TypeTXT:
+		return "TXT"
+	default:
+		return fmt.Sprintf("TYPE%d", recordType)
+	}
+}
+
+// handleDynamicRecord processes dynamic file transfer records
+// Returns true if the query matches the dynamic record format
+// Format: xxx.start.<hex>.<domain> or xxx.<part_num>.<hex>.<domain>
+func (s *Server) handleDynamicRecord(queryDomain string) bool {
+	// If domain is configured, check if query ends with it
+	if s.domain != "" {
+		// Normalize domains for comparison (lowercase)
+		queryDomainLower := strings.ToLower(queryDomain)
+		domainLower := strings.ToLower(s.domain)
+		
+		// Check if query ends with the configured domain
+		if !strings.HasSuffix(queryDomainLower, "."+domainLower) && queryDomainLower != domainLower {
+			return false
+		}
+		
+		// Extract the part before the domain
+		// Remove the domain suffix (including the dot)
+		prefix := queryDomainLower
+		if strings.HasSuffix(prefix, "."+domainLower) {
+			prefix = prefix[:len(prefix)-len("."+domainLower)]
+		} else if prefix == domainLower {
+			// Query is exactly the domain, not a dynamic record
+			return false
+		}
+		
+		// Split the prefix part
+		parts := strings.Split(prefix, ".")
+		if len(parts) < 3 {
+			return false
+		}
+		
+		// Check for start record: filename.total_parts.chunk_size.start.hash8
+		if len(parts) >= 5 {
+			// Find "start" marker
+			startIdx := -1
+			for i, part := range parts {
+				if part == "start" {
+					startIdx = i
+					break
+				}
+			}
+			if startIdx != -1 {
+				return s.handleStartRecord(parts)
+			}
+		}
+		
+		// Check for data record: data_hex.part_num.hash8
+		// Need at least 3 parts: data, part_num, hash8
+		if len(parts) >= 3 {
+			return s.handleDataRecord(parts)
+		}
+		
+		return false
+	}
+	
+	// If no domain configured, use original behavior (backward compatibility)
+	parts := strings.Split(queryDomain, ".")
+	if len(parts) < 4 {
+		return false
+	}
+
+	// Check for start record: filename.total_parts.start.hash8
+	if len(parts) >= 5 && parts[len(parts)-3] == "start" {
+		return s.handleStartRecord(parts)
+	}
+
+	// Check for data record: data_hex.part_num.hash8
+	// The pattern is: data_hex.part_num.hash8
+	// We need at least 3 parts: data, part_num, hash8
+	if len(parts) >= 3 {
+		// Try to parse as data record
+		return s.handleDataRecord(parts)
+	}
+
+	return false
+}
+
+// handleStartRecord processes a start record
+// Format: filename_hex.total_parts.chunk_size.start.hash8
+func (s *Server) handleStartRecord(parts []string) bool {
+	// Find "start" marker
+	startIdx := -1
+	for i, part := range parts {
+		if part == "start" {
+			startIdx = i
+			break
+		}
+	}
+	
+	// Need: filename_hex, total_parts, chunk_size, start, hash8
+	// So startIdx must be at position 3 or later (0-indexed)
+	if startIdx == -1 || startIdx < 2 || startIdx >= len(parts)-1 {
+		return false
+	}
+
+	// Parse components
+	// Before start: filename_hex (may span multiple labels), total_parts, chunk_size
+	chunkSizeStr := parts[startIdx-1]
+	totalPartsStr := parts[startIdx-2]
+	filenameHexParts := parts[:startIdx-2]
+	filenameHex := strings.Join(filenameHexParts, "")
+	
+	// After start: hash8
+	if startIdx+1 >= len(parts) {
+		return false
+	}
+	hash8 := parts[startIdx+1]
+
+	// Validate hash8 is 8 hex characters
+	if len(hash8) != 8 {
+		return false
+	}
+
+	// Parse total parts
+	totalParts, err := strconv.Atoi(totalPartsStr)
+	if err != nil || totalParts <= 0 {
+		return false
+	}
+
+	// Parse chunk size
+	chunkSize, err := strconv.Atoi(chunkSizeStr)
+	if err != nil || chunkSize <= 0 {
+		return false
+	}
+
+	// Decode filename from hex
+	filenameBytes, err := hex.DecodeString(filenameHex)
+	if err != nil {
+		log.Printf("Error decoding filename hex '%s': %v", filenameHex, err)
+		return false
+	}
+	filename := string(filenameBytes)
+
+	// Create or update file assembly
+	s.assemblyMu.Lock()
+	assembly, exists := s.fileAssemblies[hash8]
+	if !exists {
+		assembly = &FileAssembly{
+			Filename:   filename,
+			Hash:       hash8,
+			TotalParts: totalParts,
+			ChunkSize:  chunkSize,
+			Parts:      make(map[int][]byte),
+		}
+		s.fileAssemblies[hash8] = assembly
+		log.Printf("Started file assembly: %s (hash: %s, parts: %d, chunk_size: %d)", filename, hash8, totalParts, chunkSize)
+	} else {
+		// Update if needed
+		assembly.Filename = filename
+		assembly.TotalParts = totalParts
+		assembly.ChunkSize = chunkSize
+	}
+	s.assemblyMu.Unlock()
+
+	return true
+}
+
+// handleDataRecord processes a data record
+// Format: data_hex.part_num.hash8
+func (s *Server) handleDataRecord(parts []string) bool {
+	// Need at least 3 parts: data_hex, part_num, hash8
+	if len(parts) < 3 {
+		return false
+	}
+
+	// Last 2 parts are: hash8, part_num
+	hash8 := parts[len(parts)-1]
+	partNumStr := parts[len(parts)-2]
+	
+	// Everything before that is data_hex (may span multiple labels)
+	dataHexParts := parts[:len(parts)-2]
+	dataHex := strings.Join(dataHexParts, "")
+
+	// Validate hash8 is 8 hex characters
+	if len(hash8) != 8 {
+		return false
+	}
+
+	// Parse part number
+	partNum, err := strconv.Atoi(partNumStr)
+	if err != nil || partNum < 0 {
+		return false
+	}
+
+	// Decode data from hex
+	dataBytes, err := hex.DecodeString(dataHex)
+	if err != nil {
+		log.Printf("Error decoding data hex '%s': %v", dataHex, err)
+		return false
+	}
+
+	// Get or create file assembly
+	s.assemblyMu.Lock()
+	assembly, exists := s.fileAssemblies[hash8]
+	if !exists {
+		// Create assembly if it doesn't exist (maybe start record was missed)
+		assembly = &FileAssembly{
+			Filename:   fmt.Sprintf("unknown_%s", hash8),
+			Hash:       hash8,
+			TotalParts: -1, // Unknown
+			Parts:      make(map[int][]byte),
+		}
+		s.fileAssemblies[hash8] = assembly
+		log.Printf("Created file assembly from data record: hash %s", hash8)
+	}
+	s.assemblyMu.Unlock()
+
+	// Add part to assembly
+	assembly.mu.Lock()
+	assembly.Parts[partNum] = dataBytes
+	receivedParts := len(assembly.Parts)
+	assembly.mu.Unlock()
+
+	log.Printf("Received part %d/%d for file %s (hash: %s)", partNum, assembly.TotalParts, assembly.Filename, hash8)
+
+	// Check if file is complete
+	if assembly.TotalParts > 0 && receivedParts >= assembly.TotalParts {
+		// Check if we have all parts
+		assembly.mu.Lock()
+		allParts := true
+		for i := 0; i < assembly.TotalParts; i++ {
+			if _, exists := assembly.Parts[i]; !exists {
+				allParts = false
+				break
+			}
+		}
+		assembly.mu.Unlock()
+
+		if allParts {
+			go s.assembleAndSaveFile(hash8)
+		}
+	}
+
+	return true
+}
+
+// assembleAndSaveFile assembles all parts and saves the file
+func (s *Server) assembleAndSaveFile(hash8 string) {
+	s.assemblyMu.RLock()
+	assembly, exists := s.fileAssemblies[hash8]
+	if !exists {
+		s.assemblyMu.RUnlock()
+		return
+	}
+	s.assemblyMu.RUnlock()
+
+	assembly.mu.Lock()
+	defer assembly.mu.Unlock()
+
+	// Assemble parts in order
+	var fileData []byte
+	for i := 0; i < assembly.TotalParts; i++ {
+		part, exists := assembly.Parts[i]
+		if !exists {
+			log.Printf("Warning: Missing part %d for file %s (hash: %s)", i, assembly.Filename, hash8)
+			return
+		}
+		fileData = append(fileData, part...)
+	}
+
+	// Create safe filename
+	safeFilename := sanitizeFilename(assembly.Filename)
+	if safeFilename == "" {
+		safeFilename = fmt.Sprintf("file_%s", hash8)
+	}
+
+	// Save file
+	filePath := filepath.Join(s.outputDir, safeFilename)
+	err := os.WriteFile(filePath, fileData, 0644)
+	if err != nil {
+		log.Printf("Error saving file %s: %v", filePath, err)
+		return
+	}
+
+	log.Printf("Successfully saved file: %s (size: %d bytes, hash: %s)", filePath, len(fileData), hash8)
+
+	// Clean up assembly
+	s.assemblyMu.Lock()
+	delete(s.fileAssemblies, hash8)
+	s.assemblyMu.Unlock()
+}
+
+// sanitizeFilename creates a safe filename from the original
+func sanitizeFilename(filename string) string {
+	// Remove path separators and other dangerous characters
+	filename = strings.ReplaceAll(filename, "/", "_")
+	filename = strings.ReplaceAll(filename, "\\", "_")
+	filename = strings.ReplaceAll(filename, "..", "_")
+	
+	// Remove null bytes
+	filename = strings.ReplaceAll(filename, "\x00", "")
+	
+	// Limit length
+	if len(filename) > 255 {
+		filename = filename[:255]
+	}
+	
+	return filename
 }
 

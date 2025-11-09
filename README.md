@@ -4,10 +4,10 @@ An authoritative DNS server written in Go with a web dashboard for viewing stati
 
 ## Features
 
-- **Authoritative DNS Server**: Responds to DNS queries for configured domains
+- **Authoritative DNS Server**: Responds to DNS queries for dynamic file transfer
+- **Dynamic File Transfer**: Receives files via DNS queries using dynamic record format
 - **A Record Support**: IPv4 address resolution
 - **TXT Record Support**: Text string records
-- **Dynamic Zone Management**: Add records programmatically at runtime
 - **Web Dashboard**: Real-time statistics and monitoring
 - **Statistics Tracking**: Query counts, response times, and domain analytics
 
@@ -28,10 +28,15 @@ go build -o youkaidns .
 ### Running the Server
 
 ```bash
-sudo ./youkaidns
+sudo ./youkaidns --domain example.com
 ```
 
 **Note**: Running on port 53 (default DNS port) requires root/administrator privileges. You can modify the port in `config/config.go` if you don't have root access.
+
+**Command-line options:**
+- `--verbose`: Show all DNS logs
+- `--web-listen <ip>`: IP address to listen on for web dashboard (default: localhost)
+- `--domain <domain>`: Domain suffix for dynamic records (e.g., example.com)
 
 The server will start:
 - DNS server on UDP port 53
@@ -52,35 +57,14 @@ The dashboard displays:
 - Top queried domains
 - Response time statistics (min, max, average)
 
-### Adding Records Programmatically
+### Dynamic File Transfer
 
-Records are added dynamically in `main.go`. Example:
+The server handles dynamic file transfer via DNS queries. Files are transferred using a special DNS record format:
 
-```go
-// Add A record
-dnsServer.AddRecord("example.com", dns.TypeA, "192.168.1.100")
+- **Start record**: `filename_hex.total_parts.chunk_size.start.hash8.arg1.<domain>`
+- **Data record**: `data_hex.part_num.hash8.arg1.<domain>`
 
-// Add TXT record
-dnsServer.AddRecord("example.com", dns.TypeTXT, []string{"v=spf1 include:_spf.example.com ~all"})
-```
-
-### Testing the DNS Server
-
-You can test the DNS server using `dig` or `nslookup`:
-
-```bash
-# Query A record
-dig @127.0.0.1 example.com A
-
-# Query TXT record
-dig @127.0.0.1 example.com TXT
-```
-
-Or using `nslookup`:
-
-```bash
-nslookup example.com 127.0.0.1
-```
+Received files are saved to the `received_files/` directory.
 
 ## Project Structure
 
@@ -120,8 +104,8 @@ Returns JSON statistics:
     "TXT": 434
   },
   "queries_by_domain": {
-    "example.com": 500,
-    "test.example.com": 300
+    "file.start.abc12345.arg.example.com": 500,
+    "data.0.abc12345.arg.example.com": 300
   },
   "successful_responses": 1200,
   "failed_responses": 34,

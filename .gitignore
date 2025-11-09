@@ -1,0 +1,20 @@
+# Binaries
+youkaidns
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Test binary
+*.test
+
+# Output of the coverage tool
+*.out
+
+# Received files directory
+received_files/
+
+# Go workspace file
+go.work
+

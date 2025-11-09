@@ -9,13 +9,14 @@ import (
 
 // Server represents the web dashboard server
 type Server struct {
-	port  int
-	stats *stats.Stats
-	mux   *http.ServeMux
+	port      int
+	listenIP  string
+	stats     *stats.Stats
+	mux       *http.ServeMux
 }
 
 // NewServer creates a new web server
-func NewServer(port int, s *stats.Stats) *Server {
+func NewServer(port int, s *stats.Stats, listenIP string) *Server {
 	api := NewAPI(s)
 	mux := http.NewServeMux()
 
@@ -28,16 +29,17 @@ func NewServer(port int, s *stats.Stats) *Server {
 	mux.HandleFunc("/", serveDashboard)
 
 	return &Server{
-		port:  port,
-		stats: s,
-		mux:   mux,
+		port:     port,
+		listenIP: listenIP,
+		stats:    s,
+		mux:      mux,
 	}
 }
 
 // Start starts the web server
 func (s *Server) Start() error {
-	addr := fmt.Sprintf(":%d", s.port)
-	log.Printf("Web dashboard listening on http://localhost%s", addr)
+	addr := fmt.Sprintf("%s:%d", s.listenIP, s.port)
+	log.Printf("Web dashboard listening on http://%s", addr)
 	return http.ListenAndServe(addr, s.mux)
 }
 
