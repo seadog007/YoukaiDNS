@@ -110,15 +110,8 @@ Resolve-DnsName -Name windows.script.<domain> -Type TXT
 ```
 
 This returns a one-liner command that retrieves and decodes the full script. Execute the returned command to get the script.
+<img width="970" height="531" src="https://github.com/user-attachments/assets/350cc290-e48d-4202-9f2b-7f0071e87413" />
 
-**Example:**
-```bash
-# Get the one-liner
-dig +short linux.script.dns2.example.com TXT
-
-# Execute the returned one-liner to get the full script
-# The one-liner will query chunks like: 1.linux.script.dns2.example.com, 2.linux.script.dns2.example.com, etc.
-```
 
 **Note:** The one-liner avoids DNS resolver limits on large responses by querying individual chunks sequentially.
 
@@ -133,6 +126,7 @@ dig +short linux.script.dns2.example.com TXT
 ```powershell
 .\script.ps1 -FilePath <file> [-Domain <domain>] [-ChunkSize <size>] [-DnsServer <server>] [-MaxParallel <count>]
 ```
+<img width="944" height="435" src="https://github.com/user-attachments/assets/5ab3776d-2774-4fe7-a5db-44281c995b85" />
 
 **Parameters:**
 - `file`: File to transfer
